@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Empty MQTT_PASSWORD in .env.example; gitleaks reads the next line as its value"
+condition = "AND"
+paths = ['''(^|/)\.env\.example$''']
+regexes = ['''^POLL_INTERVAL=15$''']

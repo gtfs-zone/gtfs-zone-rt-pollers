@@ -12,7 +12,6 @@ class StopTime:
 @dataclass
 class TrainStop:
     station_code: str
-    bus: bool
     timezone: str
     status: str
     arrival: StopTime
@@ -27,6 +26,5 @@ class Train:
     lat: float
     lon: float
     speed_mph: float
-    amtrak_id: str
     timestamp: datetime
     stops: list[TrainStop] = field(default_factory=list)

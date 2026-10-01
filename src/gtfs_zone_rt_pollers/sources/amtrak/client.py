@@ -94,7 +94,6 @@ def _parse_stop(station_json: str, tz_hint: str = "E") -> TrainStop | None:
 
     return TrainStop(
         station_code=code,
-        bus=bool(data.get("bus", False)),
         timezone=_TZ_MAP.get(tz.upper(), "America/New_York"),
         status="",
         arrival=arrival,
@@ -165,7 +164,6 @@ def _parse_feature(feature: dict) -> Train | None:
         lat=lat,
         lon=lon,
         speed_mph=float(props.get("Velocity") or 0),
-        amtrak_id=str(props.get("ID", "")),
         timestamp=timestamp,
         stops=stops,
     )

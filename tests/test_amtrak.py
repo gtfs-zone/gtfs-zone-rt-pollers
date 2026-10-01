@@ -18,12 +18,10 @@ def _train(*statuses: tuple[str, str]) -> Train:
         lat=39.0,
         lon=-76.7,
         speed_mph=60.0,
-        amtrak_id="123",
         timestamp=datetime(2024, 1, 2, 12, 0, tzinfo=UTC),
         stops=[
             TrainStop(
                 station_code=code,
-                bus=False,
                 timezone="America/New_York",
                 status=status,
                 arrival=StopTime(),

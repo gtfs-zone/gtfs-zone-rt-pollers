@@ -13,8 +13,10 @@ dependencies = [
 [dependency-groups]
 dev = [
     "commitizen",
+    "deptry>=0.25.1",
     "pytest",
     "ruff",
+    "vulture>=2.16",
 ]
 
 [build-system]
@@ -38,6 +40,12 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "TC", "RUF"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.vulture]
+paths = ["src"]
+# Used only through a framework: routes, validators, tasks, ORM fields
+ignore_decorators = ["@app.*", "@router.*", "@field_validator", "@model_validator"]
+ignore_names = ["cls", "model_config"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"

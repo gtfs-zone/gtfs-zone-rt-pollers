@@ -3,6 +3,7 @@ name = "gtfs-zone-rt-pollers"
 version = "0.2.0"
 requires-python = ">=3.13"
 description = "Sidecar worker that polls the Amtrak live tracker and POSTs positions + trip-updates to rt-api ingest"
+license = "AGPL-3.0-or-later"
 dependencies = [
     "httpx>=0.28",
     "cryptography>=44",

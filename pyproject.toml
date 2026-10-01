@@ -1,6 +1,6 @@
 [project]
 name = "gtfs-zone-rt-pollers"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.13"
 description = "Sidecar worker that polls the Amtrak live tracker and POSTs positions + trip-updates to rt-api ingest"
 dependencies = [

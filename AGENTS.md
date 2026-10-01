@@ -3,7 +3,7 @@
 Sidecar worker that polls an upstream live tracker, resolves each vehicle to a
 GTFS trip instance, and POSTs positions and per-stop trip updates to rt-api's
 ingest API. One process runs one source (`SOURCE=amtrak|buswhere`), one
-container per source. Pushing to `main` publishes the image.
+container per source. A `v*` tag publishes the image.
 
 ## Commands
 

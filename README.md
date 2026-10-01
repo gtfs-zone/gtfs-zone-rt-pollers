@@ -35,3 +35,18 @@ ruff format .        # format
 pre-commit install   # install git hooks (run once after clone)
 ```
 
+
+## Environment variables
+
+| Variable | Description |
+|---|---|
+| `SOURCE` | `amtrak` (default) or `buswhere`; one source per process |
+| `POLL_INTERVAL` | Seconds between poll cycles (default 15) |
+| `HTTP_TIMEOUT` | httpx timeout seconds (default 20) |
+| `RT_API_INGEST_URL` | rt-api ingest base URL; publishing no-ops if unset |
+| `INGEST_API_TOKEN` | Bearer token for the ingest API |
+| `INGEST_TRACKER_ID` | Must equal an rt-api `Tracker.id` (the surrogate, not the `device_key`). `INGEST_VEHICLE_ID` is the old name and still works |
+| `GTFS_URL` | GTFS zip URL (defaults per source) |
+| `GTFS_PATH` | GTFS cache path (dir or `.zip`) |
+| `ROUTE_FILTER` | amtrak-only: comma-separated RouteName allowlist |
+| `BUSWHERE_ROUTES` | buswhere-only: route slugs to poll (blank = all mapped) |

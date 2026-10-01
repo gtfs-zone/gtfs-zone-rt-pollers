@@ -1,0 +1,44 @@
+publiccodeYmlVersion: "0.4"
+
+name: GTFS.zone RT Pollers
+url: "https://github.com/gtfs-zone/gtfs-zone-rt-pollers"
+
+platforms:
+  - linux
+
+categories:
+  - fleet-management
+  - data-collection
+
+developmentStatus: beta
+
+softwareType: "standalone/backend"
+
+description:
+  en:
+    shortDescription: >
+      Workers that poll upstream live trackers and post positions and trip updates to gtfs.zone.
+    longDescription: >
+      GTFS.zone RT Pollers polls an upstream live vehicle tracker, such as
+      Amtrak's or a buswhere system, resolves each vehicle to a trip in the
+      GTFS schedule, and posts positions and per-stop trip updates to the
+      ingest API of gtfs-zone-rt-api. One process runs one source, so each
+      source is deployed as its own container.
+    features:
+      - Amtrak and buswhere sources
+      - Vehicle to GTFS trip resolution
+      - Positions and trip updates posted to rt-api
+
+legal:
+  license: AGPL-3.0-or-later
+
+maintenance:
+  type: community
+  contacts:
+    - name: Max Katz-Christy
+      email: maxkatzchristy@gmail.com
+
+localisation:
+  localisationReady: false
+  availableLanguages:
+    - en

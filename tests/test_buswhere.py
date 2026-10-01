@@ -5,11 +5,14 @@ import asyncio
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from hell_gate_bridge.config import Config
-from hell_gate_bridge.gtfs import GtfsResolver
-from hell_gate_bridge.sources.buswhere import source as buswhere_source_mod
-from hell_gate_bridge.sources.buswhere.client import BuswhereObservation, fetch_route
-from hell_gate_bridge.sources.buswhere.source import BuswhereSource, _RouteMapping
+from gtfs_zone_rt_pollers.config import Config
+from gtfs_zone_rt_pollers.gtfs import GtfsResolver
+from gtfs_zone_rt_pollers.sources.buswhere import source as buswhere_source_mod
+from gtfs_zone_rt_pollers.sources.buswhere.client import (
+    BuswhereObservation,
+    fetch_route,
+)
+from gtfs_zone_rt_pollers.sources.buswhere.source import BuswhereSource, _RouteMapping
 
 TZ = ZoneInfo("America/New_York")
 
@@ -168,7 +171,7 @@ def test_buswhere_build_labels_from_device_name(tmp_path, monkeypatch):
     v2 = src._build("testslug", obs_unnamed, now)
     assert v2 is not None
     assert v2.vehicle_label == "testslug"
-    # No device: the bare slug, never None. cafe-car keys its live record on the
+    # No device: the bare slug, never None. rt-api keys its live record on the
     # vehicle_id, so a missing one would collapse the fleet onto one record.
     assert v2.vehicle_id == "testslug"
 
@@ -381,7 +384,7 @@ def test_fetch_route_single_device_uses_aggregate_stop_eta():
 
 
 def test_attribute_drops_devices_running_another_route():
-    from hell_gate_bridge.sources.buswhere.source import _attribute
+    from gtfs_zone_rt_pollers.sources.buswhere.source import _attribute
 
     shuttle_current = (42.255656, -73.791474)
     albany_current = (42.677562, -73.810432)
@@ -410,7 +413,7 @@ def test_attribute_drops_devices_running_another_route():
 
 
 def test_attribute_keeps_a_second_unclaimed_bus():
-    from hell_gate_bridge.sources.buswhere.source import _attribute
+    from gtfs_zone_rt_pollers.sources.buswhere.source import _attribute
 
     current = (42.25, -73.79)
     snapshots = {
@@ -457,7 +460,7 @@ def test_attribute_prefers_the_closer_claim():
     # A bus that just switched runs is briefly nearest to both snapshots'
     # `current`; the route it left stops updating, so the tighter match wins
     # regardless of poll order.
-    from hell_gate_bridge.sources.buswhere.source import _attribute
+    from gtfs_zone_rt_pollers.sources.buswhere.source import _attribute
 
     bus = (42.251645, -73.789423)
     stale = (42.256609, -73.79577)  # the route it left, a few fixes behind

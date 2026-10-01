@@ -19,15 +19,15 @@ from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from hell_gate_bridge.gtfs import GtfsResolver, fetch_gtfs
-from hell_gate_bridge.sources.base import Source, StopTimeUpdate, VehicleUpdate
+from gtfs_zone_rt_pollers.gtfs import GtfsResolver, fetch_gtfs
+from gtfs_zone_rt_pollers.sources.base import Source, StopTimeUpdate, VehicleUpdate
 
 from .client import BuswhereObservation, fetch_route
 
 if TYPE_CHECKING:
     import httpx
 
-    from hell_gate_bridge.config import Config
+    from gtfs_zone_rt_pollers.config import Config
 
 log = logging.getLogger(__name__)
 
@@ -190,7 +190,7 @@ class BuswhereSource(Source):
         return VehicleUpdate(
             tracker_id=self._config.tracker_id,
             # buswhere's device_id is stable within a snapshot, which is all
-            # cafe-car needs to keep concurrent buses on one tracker apart. An
+            # rt-api needs to keep concurrent buses on one tracker apart. An
             # observation with no device falls back to the bare slug: `_attribute`
             # leaves at most one unattributed bus per route, so the slug alone
             # identifies it.

@@ -3,7 +3,7 @@
 A `Source` owns everything provider-specific: fetching the upstream feed and
 resolving each observation to a GTFS `(trip_id, start_date)` plus per-stop
 predictions. It yields a neutral `VehicleUpdate`, so the publisher and poll loop
-stay provider-agnostic. cafe-car's ingest requires an explicit `trip_id`, so a
+stay provider-agnostic. rt-api's ingest requires an explicit `trip_id`, so a
 source only emits vehicles it could resolve; unresolved ones are the source's
 own concern (it has the context to log them).
 """
@@ -35,17 +35,17 @@ class VehicleUpdate:
     """One resolved vehicle: position + trip instance + per-stop predictions.
 
     `trip_id` is always set: a source resolves the trip itself rather than
-    trusting the device, so cafe-car never has to. `start_date` disambiguates
+    trusting the device, so rt-api never has to. `start_date` disambiguates
     concurrent instances of the same trip_id.
 
-    `tracker_id` is a cafe-car `Tracker.id`, the surrogate that selects the feed
+    `tracker_id` is an rt-api `Tracker.id`, the surrogate that selects the feed
     namespace, and it is shared by every vehicle a source publishes. It is not a
     credential: `/ingest/*` is authenticated by the shared `INGEST_API_TOKEN`,
     and the tracker's own secret (`device_key`) is Traccar's business, never
     this repo's.
 
     `vehicle_id` is the public per-vehicle identity, the GTFS VehicleDescriptor
-    id, and it is required: cafe-car keys its live records on
+    id, and it is required: rt-api keys its live records on
     `vehicle:{tracker_id}:{vehicle_id}`, so a source that omits it collapses its
     whole fleet onto one record, each fix overwriting the last. It must be unique
     within the tracker and stable for as long as the vehicle is out. What counts
@@ -56,13 +56,13 @@ class VehicleUpdate:
     `current_stop_*`/`current_status` say where the vehicle is *along its trip*,
     which is what lets a consumer place it against the schedule rather than only
     on a map. Every GTFS-RT VehicleStopStatus names a stop, so the three are set
-    together or left None together, and cafe-car rejects a status without a stop.
+    together or left None together, and rt-api rejects a status without a stop.
     A source that cannot tell where the vehicle is leaves all three None, and
     the feed then reports nothing rather than guessing.
     """
 
     tracker_id: str
-    vehicle_id: str  # public VehicleDescriptor.id, and half the cafe-car key
+    vehicle_id: str  # public VehicleDescriptor.id, and half the rt-api key
     trip_id: str
     timestamp: int  # epoch seconds
     lat: float

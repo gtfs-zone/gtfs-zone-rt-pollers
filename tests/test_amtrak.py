@@ -3,8 +3,8 @@ VehicleStopStatus plus the stop it describes."""
 
 from datetime import UTC, datetime
 
-from hell_gate_bridge.sources.amtrak.models import StopTime, Train, TrainStop
-from hell_gate_bridge.sources.amtrak.source import _current_stop
+from gtfs_zone_rt_pollers.sources.amtrak.models import StopTime, Train, TrainStop
+from gtfs_zone_rt_pollers.sources.amtrak.source import _current_stop
 
 # The resolved trip's {station_code: stop_sequence}, as GtfsResolver returns it.
 _SEQS = {"WAS": 1, "BWI": 2, "BAL": 3, "PHL": 4}

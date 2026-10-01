@@ -11,8 +11,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from hell_gate_bridge.gtfs import GtfsResolver, fetch_gtfs
-from hell_gate_bridge.sources.base import Source, StopTimeUpdate, VehicleUpdate
+from gtfs_zone_rt_pollers.gtfs import GtfsResolver, fetch_gtfs
+from gtfs_zone_rt_pollers.sources.base import Source, StopTimeUpdate, VehicleUpdate
 
 from .client import fetch_trains
 
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
     import httpx
 
-    from hell_gate_bridge.config import Config
+    from gtfs_zone_rt_pollers.config import Config
 
     from .models import StopTime, Train
 

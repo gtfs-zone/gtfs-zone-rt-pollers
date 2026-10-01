@@ -35,5 +35,5 @@ RUN mkdir -p /app/beat && chown bridge:bridge /app/beat
 USER bridge
 
 
-CMD ["python", "-m", "hell_gate_bridge.main"]
+CMD ["python", "-m", "gtfs_zone_rt_pollers.main"]
 

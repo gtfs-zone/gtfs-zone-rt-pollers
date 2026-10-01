@@ -1,8 +1,8 @@
-"""The publish layer: the payload shapes are the whole contract with cafe-car.
+"""The publish layer: the payload shapes are the whole contract with rt-api.
 
-Nothing else in either repo checks that a key cafe-car reads is a key this repo
+Nothing else in either repo checks that a key rt-api reads is a key this repo
 writes, so the bodies are asserted field by field. The batching rules matter for
-the same reason: a cycle is chunked so one record cafe-car rejects costs a chunk
+the same reason: a cycle is chunked so one record rt-api rejects costs a chunk
 rather than a poll.
 """
 
@@ -11,9 +11,9 @@ import asyncio
 import httpx
 import pytest
 
-from hell_gate_bridge.config import Config
-from hell_gate_bridge.publisher import CHUNK_SIZE, publish
-from hell_gate_bridge.sources.base import StopTimeUpdate, VehicleUpdate
+from gtfs_zone_rt_pollers.config import Config
+from gtfs_zone_rt_pollers.publisher import CHUNK_SIZE, publish
+from gtfs_zone_rt_pollers.sources.base import StopTimeUpdate, VehicleUpdate
 
 
 class FakeResponse:
@@ -52,7 +52,7 @@ class FakeHttp:
 
 @pytest.fixture
 def config(monkeypatch):
-    monkeypatch.setenv("CAFE_CAR_INGEST_URL", "http://cafe-car/")
+    monkeypatch.setenv("RT_API_INGEST_URL", "http://rt-api/")
     monkeypatch.setenv("INGEST_API_TOKEN", "tok")
     return Config()
 
@@ -78,7 +78,7 @@ def _update(**overrides) -> VehicleUpdate:
     return VehicleUpdate(**base)
 
 
-def test_the_position_body_is_what_cafe_car_reads(config):
+def test_the_position_body_is_what_rt_api_reads(config):
     http = FakeHttp()
 
     sent = asyncio.run(publish(config, http, [_update()]))
@@ -105,7 +105,7 @@ def test_the_position_body_is_what_cafe_car_reads(config):
 
 
 def test_an_absent_optional_is_omitted_not_nulled(config):
-    # cafe-car's serialiser reads every optional field with .get(), so an
+    # rt-api's serialiser reads every optional field with .get(), so an
     # explicit null and an absent key are not the same thing.
     http = FakeHttp()
 
@@ -189,7 +189,7 @@ def test_a_vehicle_with_no_predictions_sends_no_trip_update(config):
 
     asyncio.run(publish(config, http, [_update()]))
 
-    assert [url for url, _ in http.calls] == ["http://cafe-car/ingest/positions"]
+    assert [url for url, _ in http.calls] == ["http://rt-api/ingest/positions"]
 
 
 def test_a_cycle_goes_out_in_chunks(config):
@@ -225,7 +225,7 @@ def test_predictions_ship_even_when_the_positions_fail(config):
 
 
 def test_publishing_without_an_ingest_url_is_a_no_op(monkeypatch):
-    monkeypatch.delenv("CAFE_CAR_INGEST_URL", raising=False)
+    monkeypatch.delenv("RT_API_INGEST_URL", raising=False)
     http = FakeHttp()
 
     assert asyncio.run(publish(Config(), http, [_update()])) == (0, 0)

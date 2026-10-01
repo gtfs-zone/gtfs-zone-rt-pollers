@@ -3,9 +3,9 @@ import logging
 
 import httpx
 
-from hell_gate_bridge.config import Config
-from hell_gate_bridge.publisher import publish, publish_alerts
-from hell_gate_bridge.sources.base import Source
+from gtfs_zone_rt_pollers.config import Config
+from gtfs_zone_rt_pollers.publisher import publish, publish_alerts
+from gtfs_zone_rt_pollers.sources.base import Source
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -13,11 +13,11 @@ log = logging.getLogger(__name__)
 
 def build_source(config: Config) -> Source:
     if config.source == "amtrak":
-        from hell_gate_bridge.sources.amtrak import AmtrakSource
+        from gtfs_zone_rt_pollers.sources.amtrak import AmtrakSource
 
         return AmtrakSource(config)
     if config.source == "buswhere":
-        from hell_gate_bridge.sources.buswhere import BuswhereSource
+        from gtfs_zone_rt_pollers.sources.buswhere import BuswhereSource
 
         return BuswhereSource(config)
     raise ValueError(f"unknown SOURCE {config.source!r} (expected amtrak|buswhere)")
@@ -52,8 +52,11 @@ async def _alerts_poll_loop(
     A courtesy scrape of a marketing site, not a live tracker, so no reason to
     hit it as often as `_poll_loop` hits the live train feed.
     """
-    from hell_gate_bridge.sources.amtrak import AmtrakSource
-    from hell_gate_bridge.sources.amtrak.alerts import build_alerts, fetch_alert_html
+    from gtfs_zone_rt_pollers.sources.amtrak import AmtrakSource
+    from gtfs_zone_rt_pollers.sources.amtrak.alerts import (
+        build_alerts,
+        fetch_alert_html,
+    )
 
     if not isinstance(source, AmtrakSource):
         return

@@ -112,7 +112,7 @@ def _route_id_of(entry: str | dict) -> str:
 
 MAPPING_PATH = (
     Path(__file__).resolve().parent.parent
-    / "src/hell_gate_bridge/sources/buswhere/mapping.json"
+    / "src/gtfs_zone_rt_pollers/sources/buswhere/mapping.json"
 )
 REVIEW_PATH = Path(__file__).resolve().parent / "buswhere_map_review.json"
 

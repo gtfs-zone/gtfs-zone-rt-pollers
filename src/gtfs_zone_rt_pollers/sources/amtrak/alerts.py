@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     import httpx
     from bs4 import Tag
 
-    from hell_gate_bridge.gtfs import GtfsResolver
+    from gtfs_zone_rt_pollers.gtfs import GtfsResolver
 
 log = logging.getLogger(__name__)
 

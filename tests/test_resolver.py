@@ -9,7 +9,7 @@ downstream), which is how live trains went missing.
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from hell_gate_bridge.gtfs import GtfsResolver
+from gtfs_zone_rt_pollers.gtfs import GtfsResolver
 
 TZ = ZoneInfo("America/New_York")
 

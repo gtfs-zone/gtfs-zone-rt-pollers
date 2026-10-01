@@ -1,9 +1,9 @@
-# Hell Gate Bridge: Claude Guide
+# gtfs-zone-rt-pollers: Claude Guide
 
 ## Project Overview
 
 Sidecar worker that polls an upstream live tracker, resolves each vehicle to a
-GTFS trip instance, and POSTs positions + per-stop trip-updates to the cafe-car
+GTFS trip instance, and POSTs positions + per-stop trip-updates to the rt-api
 ingest HTTP API. One process runs one **source** (`SOURCE=amtrak|buswhere`);
 deploy one container per source.
 
@@ -53,18 +53,18 @@ pre-commit install   # install git hooks
 
 `main.py` selects a `Source` (`sources/base.py`) by `SOURCE`, runs a poll loop,
 and hands the resolved, provider-neutral `VehicleUpdate`s to the shared
-`publisher.py`, which POSTs each cycle to cafe-car's batch ingest routes
+`publisher.py`, which POSTs each cycle to rt-api's batch ingest routes
 (`/ingest/positions`, `/ingest/trip-updates`) in chunks. `gtfs.py`'s
 `GtfsResolver` is shared:
 Amtrak uses `resolve()` (by train number), buswhere uses `resolve_by_route()`.
 
 Downstream/adjacent work lives in other repos (do not edit from here):
-- **cafe-car**: needs a `Feed` for Columbia County (`static_feed_url` = the CC
+- **rt-api**: needs a `Feed` for Columbia County (`static_feed_url` = the CC
   GitHub zip) and a `Tracker` whose surrogate `id` == the buswhere
   `INGEST_TRACKER_ID`, so ingested positions surface in that feed. Get the id
-  from cafe-car's `scripts/provision_source.py`, which prints it.
-- **schedule-foamer**: loads that CC GTFS into cafe-car.
-- **music-student**: add a second compose service running this image with
+  from rt-api's `scripts/provision_source.py`, which prints it.
+- **static-importer**: loads that CC GTFS into rt-api.
+- **dev-stack**: add a second compose service running this image with
   `SOURCE=buswhere` and its own `INGEST_TRACKER_ID`.
 
 ## Environment Variables
@@ -74,9 +74,9 @@ Downstream/adjacent work lives in other repos (do not edit from here):
 | `SOURCE` | `amtrak` (default) or `buswhere`; one source per process |
 | `POLL_INTERVAL` | Seconds between poll cycles (default 15) |
 | `HTTP_TIMEOUT` | httpx timeout seconds (default 20) |
-| `CAFE_CAR_INGEST_URL` | cafe-car ingest base URL; publishing no-ops if unset |
+| `RT_API_INGEST_URL` | rt-api ingest base URL; publishing no-ops if unset |
 | `INGEST_API_TOKEN` | Bearer token for the ingest API |
-| `INGEST_TRACKER_ID` | Must equal a cafe-car `Tracker.id` (the surrogate, not the `device_key`). `INGEST_VEHICLE_ID` is the old name and still works |
+| `INGEST_TRACKER_ID` | Must equal an rt-api `Tracker.id` (the surrogate, not the `device_key`). `INGEST_VEHICLE_ID` is the old name and still works |
 | `GTFS_URL` | GTFS zip URL (defaults per source) |
 | `GTFS_PATH` | GTFS cache path (dir or `.zip`) |
 | `ROUTE_FILTER` | amtrak-only: comma-separated RouteName allowlist |
@@ -96,11 +96,11 @@ Downstream/adjacent work lives in other repos (do not edit from here):
 
 | Repo | Description | URL |
 |---|---|---|
-| cafe-car | GTFS-RT HTTP API serving real-time feeds | https://git.kcfam.us/gtfs.zone/cafe-car |
-| vehicle-poser | Worker that tracks and posts vehicle positions | https://git.kcfam.us/gtfs.zone/vehicle-poser |
-| trip-updogger | Worker that generates trip update predictions | https://git.kcfam.us/gtfs.zone/trip-updogger |
-| schedule-foamer | Worker that ingests and processes GTFS schedule data | https://git.kcfam.us/gtfs.zone/schedule-foamer |
-| railroad-club | Shared Python library for GTFS types and utilities | https://git.kcfam.us/gtfs.zone/railroad-club |
-| music-student | Orchestration repo for deployments and infra | https://git.kcfam.us/gtfs.zone/music-student |
-| landing-zone | Static marketing/status site | https://git.kcfam.us/gtfs.zone/landing-zone |
+| rt-api | GTFS-RT HTTP API serving real-time feeds | https://github.com/gtfs-zone/gtfs-zone-rt-api |
+| rt-traccar-receiver | Worker that tracks and posts vehicle positions | https://github.com/gtfs-zone/gtfs-zone-rt-traccar-receiver |
+| rt-delay-estimator | Worker that generates trip update predictions | https://github.com/gtfs-zone/gtfs-zone-rt-delay-estimator |
+| static-importer | Worker that ingests and processes GTFS schedule data | https://github.com/gtfs-zone/gtfs-zone-static-importer |
+| gtfs-zone-db-models | Shared Python library for GTFS types and utilities | https://github.com/gtfs-zone/gtfs-zone-db-models |
+| dev-stack | Orchestration repo for deployments and infra | https://github.com/gtfs-zone/gtfs-zone-dev-stack |
+| homepage | Static marketing/status site | https://github.com/gtfs-zone/gtfs-zone-homepage |
 

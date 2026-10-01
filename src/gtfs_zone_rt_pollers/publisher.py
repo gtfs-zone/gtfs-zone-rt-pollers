@@ -1,12 +1,12 @@
 """Shared, provider-agnostic publish layer.
 
-Takes resolved `VehicleUpdate`s (from any `Source`) and POSTs them to cafe-car's
+Takes resolved `VehicleUpdate`s (from any `Source`) and POSTs them to rt-api's
 ingest seam: positions to `/ingest/positions`, per-stop predictions to
 `/ingest/trip-updates`. Speed is metres/second and timestamps are epoch seconds,
-matching the `vehicle:*` contract cafe-car serves from.
+matching the `vehicle:*` contract rt-api serves from.
 
 A cycle goes out in chunks rather than one request per vehicle: Amtrak is ~53
-trains every 15s, which was over a hundred round trips a cycle. cafe-car
+trains every 15s, which was over a hundred round trips a cycle. rt-api
 validates a batch as a whole, so a chunk is the blast radius of one malformed
 record.
 """
@@ -19,14 +19,14 @@ from typing import TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
-    from hell_gate_bridge.config import Config
-    from hell_gate_bridge.sources.amtrak.alerts import Alert
-    from hell_gate_bridge.sources.base import StopTimeUpdate, VehicleUpdate
+    from gtfs_zone_rt_pollers.config import Config
+    from gtfs_zone_rt_pollers.sources.amtrak.alerts import Alert
+    from gtfs_zone_rt_pollers.sources.base import StopTimeUpdate, VehicleUpdate
 
 log = logging.getLogger(__name__)
 
 
-# Positions are small and cafe-car writes them one at a time, so the chunk size
+# Positions are small and rt-api writes them one at a time, so the chunk size
 # is about bounding what a single bad record costs, not about request size.
 CHUNK_SIZE = 25
 
@@ -50,7 +50,7 @@ def _position_body(v: VehicleUpdate) -> dict[str, object]:
         body["bearing"] = v.bearing
     if v.route_id is not None:
         body["route_id"] = v.route_id
-    # All three together or none: cafe-car rejects a status with no stop to
+    # All three together or none: rt-api rejects a status with no stop to
     # describe. Sequence 0 is a real stop_sequence, so test against None.
     if v.current_stop_sequence is not None:
         body["current_stop_sequence"] = v.current_stop_sequence
@@ -102,7 +102,7 @@ async def _post_chunks(
 ) -> int:
     """POST `bodies` in chunks under one JSON key. Returns the count accepted.
 
-    A chunk cafe-car rejects is logged and skipped, and the rest of the cycle
+    A chunk rt-api rejects is logged and skipped, and the rest of the cycle
     still ships: one unresolvable record must not cost a whole poll.
     """
     sent = 0
@@ -122,7 +122,7 @@ async def publish(
 ) -> tuple[int, int]:
     """POST positions + trip-updates. Returns (positions, trip_updates) counts."""
     if not config.ingest_url:
-        log.error("CAFE_CAR_INGEST_URL not set, cannot publish")
+        log.error("RT_API_INGEST_URL not set, cannot publish")
         return 0, 0
 
     base = config.ingest_url.rstrip("/")
@@ -179,13 +179,13 @@ async def publish_alerts(
 ) -> int:
     """POST a full-replace sync of the current alert set. Returns the count sent.
 
-    Unlike `publish`, this is one batch call: cafe-car's `/ingest/alerts`
+    Unlike `publish`, this is one batch call: rt-api's `/ingest/alerts`
     replaces the producer's entire alert set in one transaction, so a stale
     alert (removed from amtrak.com) disappears on the next sync without any
     separate expiry logic here.
     """
     if not config.ingest_url:
-        log.error("CAFE_CAR_INGEST_URL not set, cannot publish alerts")
+        log.error("RT_API_INGEST_URL not set, cannot publish alerts")
         return 0
 
     base = config.ingest_url.rstrip("/")

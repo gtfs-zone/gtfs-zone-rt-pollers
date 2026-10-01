@@ -1,6 +1,6 @@
 """Config reads one tracker id under two names during the rename."""
 
-from hell_gate_bridge.config import Config
+from gtfs_zone_rt_pollers.config import Config
 
 
 def test_the_tracker_id_comes_from_ingest_tracker_id(monkeypatch):

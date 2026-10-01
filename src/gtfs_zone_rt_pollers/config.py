@@ -27,14 +27,14 @@ class Config:
         # httpx defaults to 5s; Amtrak's getTrainsData blob is slow and large, so
         # be explicit rather than inheriting a default that silently times out.
         self.http_timeout: float = float(os.environ.get("HTTP_TIMEOUT", "20"))
-        # cafe-car ingest seam (positions + trip-updates over HTTP). This must
-        # match a feed's `Tracker.id` so cafe-car's `vehicle:{tracker_id}:*`
+        # rt-api ingest seam (positions + trip-updates over HTTP). This must
+        # match a feed's `Tracker.id` so rt-api's `vehicle:{tracker_id}:*`
         # scan finds the records. It is a surrogate, not a secret: the request
         # is authenticated by INGEST_API_TOKEN, and the tracker's own credential
         # (`device_key`) never comes near this process. It is a per-tracker id,
         # not a vehicle id: one tracker can carry many concurrent vehicles, each
         # supplying its own public vehicle_id (see AmtrakSource).
-        self.ingest_url: str | None = os.environ.get("CAFE_CAR_INGEST_URL")
+        self.ingest_url: str | None = os.environ.get("RT_API_INGEST_URL")
         self.ingest_token: str | None = os.environ.get("INGEST_API_TOKEN")
         # INGEST_VEHICLE_ID is the old name for the same value, kept working for
         # one release so a deploy can set the new name on its own schedule.

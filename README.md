@@ -1,5 +1,7 @@
 # gtfs-zone-rt-pollers
 
+[![CI](https://img.shields.io/github/actions/workflow/status/gtfs-zone/gtfs-zone-rt-pollers/check.yml?branch=main&label=CI)](https://github.com/gtfs-zone/gtfs-zone-rt-pollers/actions/workflows/check.yml?query=branch%3Amain) [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE.txt) [![Container image](https://img.shields.io/badge/image-ghcr.io-blue?logo=docker&logoColor=white)](https://github.com/gtfs-zone/gtfs-zone-rt-pollers/pkgs/container/gtfs-zone-rt-pollers)
+
 Sidecar worker that polls an upstream live tracker (Amtrak or buswhere/Columbia
 County), resolves each vehicle to a GTFS trip, and POSTs positions + per-stop
 trip-updates to the rt-api ingest API. Select the source with `SOURCE`.

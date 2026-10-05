@@ -1,3 +1,9 @@
+## v0.3.1 (2026-10-06)
+
+### Fix
+
+- **hudsonlink**: warn once per trip on upstream 5xx status errors
+
 ## v0.3.0 (2026-10-06)
 
 ### Feat

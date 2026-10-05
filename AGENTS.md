@@ -2,7 +2,7 @@
 
 Sidecar worker that polls an upstream live tracker, resolves each vehicle to a
 GTFS trip instance, and POSTs positions and per-stop trip updates to rt-api's
-ingest API. One process runs one source (`SOURCE=amtrak|buswhere`), one
+ingest API. One process runs one source (`SOURCE=amtrak|buswhere|hudsonlink`), one
 container per source. A `v*` tag publishes the image.
 
 ## Commands
@@ -24,6 +24,9 @@ in [README.md](README.md).
   window (`resolve_by_route()`), mapping stop IDs through
   `sources/buswhere/mapping.json`. The map's keys and the device attribution
   rules are in [docs/buswhere.md](docs/buswhere.md).
+- **hudsonlink** polls CoachUSA's journey API and resolves by ordered stops and
+  first departure (`resolve_by_pattern()`). Endpoints and quirks are in
+  [docs/hudsonlink.md](docs/hudsonlink.md).
 - `INGEST_TRACKER_ID` is an rt-api `Tracker.id` (the surrogate, never the
   `device_key`). rt-api's `scripts/provision_source.py` creates the tracker and
   prints it.

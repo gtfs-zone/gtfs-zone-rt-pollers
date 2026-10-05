@@ -20,7 +20,13 @@ def build_source(config: Config) -> Source:
         from gtfs_zone_rt_pollers.sources.buswhere import BuswhereSource
 
         return BuswhereSource(config)
-    raise ValueError(f"unknown SOURCE {config.source!r} (expected amtrak|buswhere)")
+    if config.source == "hudsonlink":
+        from gtfs_zone_rt_pollers.sources.hudsonlink import HudsonLinkSource
+
+        return HudsonLinkSource(config)
+    raise ValueError(
+        f"unknown SOURCE {config.source!r} (expected amtrak|buswhere|hudsonlink)"
+    )
 
 
 async def _poll_loop(config: Config, source: Source, http: httpx.AsyncClient) -> None:

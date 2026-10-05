@@ -90,6 +90,12 @@ class GtfsResolver:
         # which visit the same stop twice, keep both occurrences, needed to place
         # a predicted arrival on the correct scheduled visit.
         self._trip_schedule: dict[str, list[tuple[int, str, int]]] = {}
+        # stop_code -> stop_id, for providers that name stops by their public
+        # code (Hudson Link).
+        self._stop_codes: dict[str, str] = {}
+        # (ordered stop_id tuple, first departure secs) -> [trip_id], for
+        # providers that identify a trip only by its pattern and start time.
+        self._trips_by_pattern: dict[tuple[tuple[str, ...], int], list[str]] = {}
         # stop_times.txt values are agency-local, so the service day must be
         # anchored in the agency's zone, not UTC.
         self._tz: ZoneInfo = ZoneInfo("America/New_York")
@@ -153,6 +159,13 @@ class GtfsResolver:
         except (KeyError, OSError) as exc:
             log.warning("no routes.txt (%s), route-name lookup disabled", exc)
 
+        try:
+            for row in csv.DictReader(io.StringIO(self._read_file(path, "stops.txt"))):
+                if row.get("stop_code"):
+                    self._stop_codes[row["stop_code"]] = row["stop_id"]
+        except (KeyError, OSError) as exc:
+            log.debug("no stops.txt (%s)", exc)
+
         for row in csv.DictReader(io.StringIO(self._read_file(path, "trips.txt"))):
             trip_id = row["trip_id"]
             service_id = row["service_id"]
@@ -180,8 +193,10 @@ class GtfsResolver:
 
         for tid in first_dep:
             self._windows[tid] = (first_dep[tid], last_arr[tid])
-        for sched in self._trip_schedule.values():
+        for tid, sched in self._trip_schedule.items():
             sched.sort()
+            pattern = tuple(stop_id for _, stop_id, _ in sched)
+            self._trips_by_pattern.setdefault((pattern, first_dep[tid]), []).append(tid)
 
     def _is_active(self, service_id: str, d: date) -> bool:
         date_int = int(d.strftime("%Y%m%d"))
@@ -214,6 +229,66 @@ class GtfsResolver:
     def stop_sequences(self, trip_id: str) -> dict[str, int]:
         """{stop_id: stop_sequence} for a resolved trip; empty if unknown."""
         return self._trip_stops.get(trip_id, {})
+
+    @property
+    def stop_codes(self) -> dict[str, str]:
+        """{stop_code: stop_id} from stops.txt."""
+        return self._stop_codes
+
+    def first_stop_pairs(self) -> set[tuple[str, str]]:
+        """Distinct (first stop_id, second stop_id) across all trip patterns."""
+        return {
+            (pattern[0], pattern[1])
+            for pattern, _ in self._trips_by_pattern
+            if len(pattern) >= 2
+        }
+
+    def resolve_by_pattern(
+        self, stop_ids: list[str], departure: datetime
+    ) -> tuple[str, str] | None:
+        """Resolve a trip by its ordered stops and first departure time.
+
+        For providers with no trip id that matches the GTFS (Hudson Link). A
+        departure after midnight may belong to the previous service day (GTFS
+        times past 24:00), so both days are tried. Returns
+        (trip_id, start_date), or None when no active trip matches.
+        """
+        pattern = tuple(stop_ids)
+        local_day = departure.astimezone(self._tz).date()
+        for lookback in range(2):
+            d = local_day - timedelta(days=lookback)
+            secs = int((departure - self._service_midnight(d)).total_seconds())
+            matches = [
+                trip_id
+                for trip_id in self._trips_by_pattern.get((pattern, secs), [])
+                if self._is_active(self._trip_service.get(trip_id, ""), d)
+            ]
+            if matches:
+                return min(matches), d.strftime("%Y%m%d")
+        return None
+
+    def trips_near(
+        self, now: datetime, before: timedelta, after: timedelta
+    ) -> list[tuple[str, str]]:
+        """(trip_id, start_date) for active trips scheduled around `now`.
+
+        A trip qualifies when `now` falls within [first_dep - before,
+        last_arr + after] on an active service day (today or yesterday).
+        """
+        local_today = now.astimezone(self._tz).date()
+        trips: list[tuple[str, str]] = []
+        for lookback in range(2):
+            d = local_today - timedelta(days=lookback)
+            service_midnight = self._service_midnight(d)
+            start_date = d.strftime("%Y%m%d")
+            for trip_id, (first_dep, last_arr) in self._windows.items():
+                start = service_midnight + timedelta(seconds=first_dep)
+                end = service_midnight + timedelta(seconds=last_arr)
+                if not (start - before <= now <= end + after):
+                    continue
+                if self._is_active(self._trip_service.get(trip_id, ""), d):
+                    trips.append((trip_id, start_date))
+        return trips
 
     def route_for(self, trip_id: str) -> str | None:
         """GTFS route_id for a resolved trip; None if unknown."""

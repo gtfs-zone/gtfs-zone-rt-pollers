@@ -20,12 +20,12 @@ description:
       Workers that poll upstream live trackers and post positions and trip updates to gtfs.zone.
     longDescription: >
       GTFS.zone RT Pollers polls an upstream live vehicle tracker, such as
-      Amtrak's or a buswhere system, resolves each vehicle to a trip in the
+      Amtrak's, a buswhere system or Hudson Link's, resolves each vehicle to a trip in the
       GTFS schedule, and posts positions and per-stop trip updates to the
       ingest API of gtfs-zone-rt-api. One process runs one source, so each
       source is deployed as its own container.
     features:
-      - Amtrak and buswhere sources
+      - Amtrak, buswhere and Hudson Link sources
       - Vehicle to GTFS trip resolution
       - Positions and trip updates posted to rt-api
 

@@ -1,3 +1,9 @@
+## v0.3.0 (2026-10-06)
+
+### Feat
+
+- **hudsonlink**: add Hudson Link source
+
 ## v0.2.2 (2026-10-02)
 
 ### Fix

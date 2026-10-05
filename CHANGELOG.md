@@ -1,3 +1,9 @@
+## v0.4.0 (2026-10-06)
+
+### Feat
+
+- report upstream health to Gatus heartbeats
+
 ## v0.3.1 (2026-10-06)
 
 ### Fix

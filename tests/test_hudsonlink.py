@@ -10,12 +10,16 @@ import httpx
 
 from gtfs_zone_rt_pollers.config import Config
 from gtfs_zone_rt_pollers.gtfs import GtfsResolver
+from gtfs_zone_rt_pollers.sources.hudsonlink import source as source_mod
 from gtfs_zone_rt_pollers.sources.hudsonlink.client import (
     fetch_status,
     parse_journey,
     parse_status,
 )
-from gtfs_zone_rt_pollers.sources.hudsonlink.source import HudsonLinkSource
+from gtfs_zone_rt_pollers.sources.hudsonlink.source import (
+    HudsonLinkSource,
+    _JourneyRef,
+)
 
 TZ = ZoneInfo("America/New_York")
 
@@ -311,3 +315,29 @@ def test_trips_near_window(tmp_path):
     # 00:20 Tuesday is still inside Monday's T24.
     near = r.trips_near(_at(0, 20, d=6), timedelta(0), timedelta(0))
     assert near == [("T24", "20261005")]
+
+
+def test_fetch_warns_once_per_trip_on_upstream_5xx(tmp_path, monkeypatch, caplog):
+    source = _source(tmp_path, monkeypatch)
+    source._journeys = {("T03", "20261005"): _JourneyRef("j3", date(2026, 10, 5))}
+    source._discovered_on = date(2026, 10, 5)
+    monkeypatch.setattr(
+        source._resolver, "trips_near", lambda *a: [("T03", "20261005")]
+    )
+    monkeypatch.setattr(
+        source_mod,
+        "datetime",
+        type("D", (), {"now": staticmethod(lambda tz: _at(18, 30))}),
+    )
+
+    def handler(request):
+        return httpx.Response(500, json={"message": "Server Error"})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            for _ in range(3):
+                assert await source.fetch(http) == []
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(run())
+    assert sum("status for T03 failed" in r.getMessage() for r in caplog.records) == 1

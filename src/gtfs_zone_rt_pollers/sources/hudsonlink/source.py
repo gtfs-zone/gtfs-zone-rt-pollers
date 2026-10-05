@@ -16,14 +16,14 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
+
 from gtfs_zone_rt_pollers.gtfs import GtfsResolver, fetch_gtfs
 from gtfs_zone_rt_pollers.sources.base import Source, StopTimeUpdate, VehicleUpdate
 
 from .client import Journey, JourneyStatus, TimePoint, fetch_status, search
 
 if TYPE_CHECKING:
-    import httpx
-
     from gtfs_zone_rt_pollers.config import Config
 
 log = logging.getLogger(__name__)
@@ -75,6 +75,8 @@ class HudsonLinkSource(Source):
         self._journeys: dict[tuple[str, str], _JourneyRef] = {}
         self._discovered_on: date | None = None
         self._last_discovery: datetime | None = None
+        # Trips whose status already returned an upstream 5xx, warned once.
+        self._failing: set[tuple[str, str]] = set()
 
     async def startup(self, http: httpx.AsyncClient) -> None:
         gtfs_path = await fetch_gtfs(
@@ -165,6 +167,7 @@ class HudsonLinkSource(Source):
             for key, ref in {**self._journeys, **matched}.items()
             if key[1] >= oldest
         }
+        self._failing &= self._journeys.keys()
         if not failed:
             self._discovered_on = today
         log.info(
@@ -298,6 +301,17 @@ class HudsonLinkSource(Source):
                     return key, await fetch_status(
                         http, ref.journey_id, ref.status_date
                     )
+                except httpx.HTTPStatusError as exc:
+                    # Some trips return 500 on every poll; warn on the first.
+                    if exc.response.is_server_error:
+                        if key in self._failing:
+                            log.debug(
+                                "hudsonlink: status for %s failed: %r", key[0], exc
+                            )
+                            return key, None
+                        self._failing.add(key)
+                    log.warning("hudsonlink: status for %s failed: %r", key[0], exc)
+                    return key, None
                 except Exception as exc:
                     log.warning("hudsonlink: status for %s failed: %r", key[0], exc)
                     return key, None

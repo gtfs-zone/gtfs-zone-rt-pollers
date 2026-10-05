@@ -79,6 +79,10 @@ class VehicleUpdate:
     stop_time_updates: list[StopTimeUpdate] = field(default_factory=list)
 
 
+class UpstreamError(Exception):
+    """Every upstream request a source made in a cycle failed."""
+
+
 class Source(ABC):
     """A provider-specific poller that yields resolved `VehicleUpdate`s."""
 
@@ -93,4 +97,9 @@ class Source(ABC):
 
     @abstractmethod
     async def fetch(self, http: httpx.AsyncClient) -> list[VehicleUpdate]:
-        """Poll the upstream feed and return resolved vehicles."""
+        """Poll the upstream feed and return resolved vehicles.
+
+        Raises when the upstream could not be read at all, so the poll loop
+        can report the cycle as failed. Partial failures are logged and the
+        cycle still succeeds.
+        """

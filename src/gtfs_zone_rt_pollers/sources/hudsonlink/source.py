@@ -19,7 +19,12 @@ from typing import TYPE_CHECKING
 import httpx
 
 from gtfs_zone_rt_pollers.gtfs import GtfsResolver, fetch_gtfs
-from gtfs_zone_rt_pollers.sources.base import Source, StopTimeUpdate, VehicleUpdate
+from gtfs_zone_rt_pollers.sources.base import (
+    Source,
+    StopTimeUpdate,
+    UpstreamError,
+    VehicleUpdate,
+)
 
 from .client import Journey, JourneyStatus, TimePoint, fetch_status, search
 
@@ -66,6 +71,15 @@ def _same_route(api_route: str | None, gtfs_route: str | None) -> bool:
     return api_route.removesuffix("X") == gtfs_route.removesuffix("X")
 
 
+def _one_trip_5xx(errors: list[Exception]) -> bool:
+    """A lone upstream 5xx, which some trips return on every poll."""
+    return (
+        len(errors) == 1
+        and isinstance(errors[0], httpx.HTTPStatusError)
+        and errors[0].response.is_server_error
+    )
+
+
 class HudsonLinkSource(Source):
     name = "hudsonlink"
 
@@ -77,6 +91,8 @@ class HudsonLinkSource(Source):
         self._last_discovery: datetime | None = None
         # Trips whose status already returned an upstream 5xx, warned once.
         self._failing: set[tuple[str, str]] = set()
+        # Set while the last discovery had every search fail.
+        self._discovery_error: str | None = None
 
     async def startup(self, http: httpx.AsyncClient) -> None:
         gtfs_path = await fetch_gtfs(
@@ -131,11 +147,14 @@ class HudsonLinkSource(Source):
         code_for = {stop_id: code for code, stop_id in resolver.stop_codes.items()}
 
         journeys: dict[str, Journey] = {}
+        searched = 0
         failed = 0
+        last_error: Exception | None = None
         for first, second in sorted(resolver.first_stop_pairs()):
             if first not in code_for or second not in code_for:
                 continue
             for day in (today - timedelta(days=1), today):
+                searched += 1
                 try:
                     results = await search(
                         http,
@@ -153,6 +172,7 @@ class HudsonLinkSource(Source):
                         exc,
                     )
                     failed += 1
+                    last_error = exc
                     continue
                 for j in results:
                     if j.carrier_code == _CARRIER:
@@ -170,6 +190,11 @@ class HudsonLinkSource(Source):
         self._failing &= self._journeys.keys()
         if not failed:
             self._discovered_on = today
+        self._discovery_error = (
+            f"all {searched} hudsonlink searches failed: {last_error!r}"
+            if searched and failed == searched
+            else None
+        )
         log.info(
             "hudsonlink: discovery found %d journeys, matched %d trips "
             "(%d searches failed)",
@@ -293,6 +318,8 @@ class HudsonLinkSource(Source):
         ]
         semaphore = asyncio.Semaphore(_CONCURRENCY)
 
+        errors: list[Exception] = []
+
         async def poll(
             key: tuple[str, str], ref: _JourneyRef
         ) -> tuple[tuple[str, str], JourneyStatus | None]:
@@ -302,6 +329,7 @@ class HudsonLinkSource(Source):
                         http, ref.journey_id, ref.status_date
                     )
                 except httpx.HTTPStatusError as exc:
+                    errors.append(exc)
                     # Some trips return 500 on every poll; warn on the first.
                     if exc.response.is_server_error:
                         if key in self._failing:
@@ -313,11 +341,19 @@ class HudsonLinkSource(Source):
                     log.warning("hudsonlink: status for %s failed: %r", key[0], exc)
                     return key, None
                 except Exception as exc:
+                    errors.append(exc)
                     log.warning("hudsonlink: status for %s failed: %r", key[0], exc)
                     return key, None
 
         statuses = await asyncio.gather(*(poll(k, r) for k, r in targets))
         updates = self._select(list(statuses), now)
+        if not updates:
+            if self._discovery_error:
+                raise UpstreamError(self._discovery_error)
+            if targets and len(errors) == len(targets) and not _one_trip_5xx(errors):
+                raise UpstreamError(
+                    f"all {len(targets)} hudsonlink status calls failed: {errors[-1]!r}"
+                )
         log.debug(
             "hudsonlink: polled %d scheduled trips, %d live", len(targets), len(updates)
         )

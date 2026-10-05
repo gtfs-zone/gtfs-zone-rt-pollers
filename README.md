@@ -53,3 +53,6 @@ pre-commit install   # install git hooks (run once after clone)
 | `ROUTE_FILTER` | amtrak-only: comma-separated RouteName allowlist |
 | `BUSWHERE_ROUTES` | buswhere-only: route slugs to poll (blank = all mapped) |
 | `HUDSONLINK_SERVICE_UUID` | hudsonlink-only: CoachUSA service uuid that scopes journey searches (defaults to Hudson Link's) |
+| `GATUS_URL` | Gatus base URL for upstream-health heartbeats; heartbeats are skipped if unset |
+| `GATUS_ENDPOINT_KEY` | Gatus external endpoint key (`<group>_<name>`, e.g. `pollers_amtrak-poller`) |
+| `GATUS_TOKEN` | Bearer token for that external endpoint |

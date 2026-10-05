@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gtfs_zone_rt_pollers.gtfs import GtfsResolver, fetch_gtfs
-from gtfs_zone_rt_pollers.sources.base import Source, StopTimeUpdate, VehicleUpdate
+from gtfs_zone_rt_pollers.sources.base import (
+    Source,
+    StopTimeUpdate,
+    UpstreamError,
+    VehicleUpdate,
+)
 
 from .client import BuswhereObservation, fetch_route
 
@@ -219,13 +224,19 @@ class BuswhereSource(Source):
         assert self._resolver is not None, "startup() must run before fetch()"
 
         snapshots: dict[str, list[BuswhereObservation]] = {}
+        last_error: Exception | None = None
         for slug in self._slugs:
             try:
                 snapshots[slug] = await fetch_route(http, slug)
-            except Exception:
+            except Exception as exc:
                 # One malformed/unreachable route must not abort the whole
                 # cycle and suppress the routes that parse cleanly.
                 log.exception("buswhere: route %s failed, skipping", slug)
+                last_error = exc
+        if self._slugs and not snapshots:
+            raise UpstreamError(
+                f"all {len(self._slugs)} buswhere routes failed: {last_error!r}"
+            )
 
         owned = _attribute(snapshots)
 

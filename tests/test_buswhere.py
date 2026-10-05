@@ -5,8 +5,12 @@ import asyncio
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+import httpx
+import pytest
+
 from gtfs_zone_rt_pollers.config import Config
 from gtfs_zone_rt_pollers.gtfs import GtfsResolver
+from gtfs_zone_rt_pollers.sources.base import UpstreamError
 from gtfs_zone_rt_pollers.sources.buswhere import source as buswhere_source_mod
 from gtfs_zone_rt_pollers.sources.buswhere.client import (
     BuswhereObservation,
@@ -250,7 +254,11 @@ def test_now_from_utc_timestamp_resolves_local_day(tmp_path, monkeypatch):
 class _FakeResponse:
     def __init__(self, payload):
         self.status_code = 200
+        self.is_redirect = False
         self._payload = payload
+
+    def raise_for_status(self):
+        pass
 
     def json(self):
         return self._payload
@@ -307,6 +315,33 @@ def test_fetch_failure_on_one_route_does_not_abort_cycle(tmp_path, monkeypatch, 
     updates = asyncio.run(src.fetch(None))
     assert [u.trip_id for u in updates] == ["LOOP"]
     assert "route bad failed" in caplog.text
+
+
+def test_fetch_raises_when_every_route_fails(tmp_path, monkeypatch):
+    src = _buswhere_source(tmp_path, monkeypatch)
+    src._slugs = ["a", "b"]
+
+    async def fake_fetch_route(http, slug, base_url=None):
+        raise httpx.ConnectError("unreachable")
+
+    monkeypatch.setattr(buswhere_source_mod, "fetch_route", fake_fetch_route)
+    with pytest.raises(UpstreamError, match="all 2 buswhere routes failed"):
+        asyncio.run(src.fetch(None))
+
+
+def test_fetch_route_dormant_redirect_is_empty_and_5xx_raises():
+    def handler(request):
+        if request.url.path.endswith("dormant"):
+            return httpx.Response(302, headers={"location": "/elsewhere"})
+        return httpx.Response(503)
+
+    async def run(slug):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            return await fetch_route(http, slug, "https://bw.test/routes")
+
+    assert asyncio.run(run("dormant")) == []
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(run("down"))
 
 
 # A snapshot's `devices` list carries buses running other routes. These payloads

@@ -72,3 +72,8 @@ class Config:
         self.hudsonlink_service_uuid: str = os.environ.get(
             "HUDSONLINK_SERVICE_UUID", "0a8ec915-f7d9-4de8-91c1-12442e6c327b"
         )
+        # Gatus external endpoint that receives each cycle's upstream result.
+        # Heartbeats are skipped when the URL or key is unset.
+        self.gatus_url: str | None = os.environ.get("GATUS_URL")
+        self.gatus_endpoint_key: str | None = os.environ.get("GATUS_ENDPOINT_KEY")
+        self.gatus_token: str = os.environ.get("GATUS_TOKEN", "")

@@ -104,8 +104,9 @@ async def fetch_route(
         headers=_HEADERS,
         follow_redirects=False,
     )
-    if resp.status_code != 200:
+    if resp.is_redirect:
         return []  # dormant routes 302-redirect to the default route
+    resp.raise_for_status()
     try:
         data = resp.json()
     except ValueError:

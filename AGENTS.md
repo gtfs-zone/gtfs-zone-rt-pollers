@@ -27,6 +27,10 @@ in [README.md](README.md).
 - **hudsonlink** polls CoachUSA's journey API and resolves by ordered stops and
   first departure (`resolve_by_pattern()`). Endpoints and quirks are in
   [docs/hudsonlink.md](docs/hudsonlink.md).
+- Each cycle reports upstream health to a Gatus external endpoint
+  (`heartbeat.py`). A source's `fetch()` raises (`UpstreamError` when it
+  skips failures one by one) only when the upstream could not be read at all;
+  an empty but reachable upstream is a success.
 - `INGEST_TRACKER_ID` is an rt-api `Tracker.id` (the surrogate, never the
   `device_key`). rt-api's `scripts/provision_source.py` creates the tracker and
   prints it.

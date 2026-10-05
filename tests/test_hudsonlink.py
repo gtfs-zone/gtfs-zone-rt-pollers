@@ -7,9 +7,11 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
+import pytest
 
 from gtfs_zone_rt_pollers.config import Config
 from gtfs_zone_rt_pollers.gtfs import GtfsResolver
+from gtfs_zone_rt_pollers.sources.base import UpstreamError
 from gtfs_zone_rt_pollers.sources.hudsonlink import source as source_mod
 from gtfs_zone_rt_pollers.sources.hudsonlink.client import (
     fetch_status,
@@ -341,3 +343,76 @@ def test_fetch_warns_once_per_trip_on_upstream_5xx(tmp_path, monkeypatch, caplog
     with caplog.at_level(logging.WARNING):
         asyncio.run(run())
     assert sum("status for T03 failed" in r.getMessage() for r in caplog.records) == 1
+
+
+def _fetch_at(source, monkeypatch, handler, targets):
+    monkeypatch.setattr(source._resolver, "trips_near", lambda *a: targets)
+    monkeypatch.setattr(
+        source_mod,
+        "datetime",
+        type("D", (), {"now": staticmethod(lambda tz: _at(18, 30))}),
+    )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            return await source.fetch(http)
+
+    return asyncio.run(run())
+
+
+def test_fetch_raises_when_every_status_fails(tmp_path, monkeypatch):
+    source = _source(tmp_path, monkeypatch)
+    source._journeys = {
+        ("T03", "20261005"): _JourneyRef("j3", date(2026, 10, 5)),
+        ("T05", "20261005"): _JourneyRef("j5", date(2026, 10, 5)),
+    }
+    source._discovered_on = date(2026, 10, 5)
+
+    def handler(request):
+        return httpx.Response(500, json={"message": "Server Error"})
+
+    with pytest.raises(UpstreamError, match="all 2 hudsonlink status calls"):
+        _fetch_at(source, monkeypatch, handler, list(source._journeys))
+
+
+def test_fetch_tolerates_lone_trip_5xx(tmp_path, monkeypatch):
+    source = _source(tmp_path, monkeypatch)
+    source._journeys = {("T03", "20261005"): _JourneyRef("j3", date(2026, 10, 5))}
+    source._discovered_on = date(2026, 10, 5)
+
+    def handler(request):
+        return httpx.Response(500, json={"message": "Server Error"})
+
+    assert _fetch_at(source, monkeypatch, handler, list(source._journeys)) == []
+
+
+def test_fetch_raises_on_lone_transport_error(tmp_path, monkeypatch):
+    source = _source(tmp_path, monkeypatch)
+    source._journeys = {("T03", "20261005"): _JourneyRef("j3", date(2026, 10, 5))}
+    source._discovered_on = date(2026, 10, 5)
+
+    def handler(request):
+        raise httpx.ConnectError("unreachable")
+
+    with pytest.raises(UpstreamError):
+        _fetch_at(source, monkeypatch, handler, list(source._journeys))
+
+
+def test_failed_discovery_stays_failed_until_a_search_succeeds(tmp_path, monkeypatch):
+    source = _source(tmp_path, monkeypatch)
+    up = False
+
+    def handler(request):
+        if not up:
+            raise httpx.ConnectError("unreachable")
+        return httpx.Response(200, json={"results": []})
+
+    # Discovery fails, then later cycles skip discovery but keep failing.
+    with pytest.raises(UpstreamError, match="hudsonlink searches failed"):
+        _fetch_at(source, monkeypatch, handler, [])
+    with pytest.raises(UpstreamError, match="hudsonlink searches failed"):
+        _fetch_at(source, monkeypatch, handler, [])
+
+    up = True
+    source._last_discovery = None
+    assert _fetch_at(source, monkeypatch, handler, []) == []

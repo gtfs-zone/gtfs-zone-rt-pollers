@@ -4,6 +4,7 @@ import logging
 import httpx
 
 from gtfs_zone_rt_pollers.config import Config
+from gtfs_zone_rt_pollers.heartbeat import Heartbeat
 from gtfs_zone_rt_pollers.publisher import publish, publish_alerts
 from gtfs_zone_rt_pollers.sources.base import Source
 
@@ -30,9 +31,16 @@ def build_source(config: Config) -> Source:
 
 
 async def _poll_loop(config: Config, source: Source, http: httpx.AsyncClient) -> None:
+    heartbeat = Heartbeat(config)
     while True:
         try:
-            updates = await source.fetch(http)
+            try:
+                updates = await source.fetch(http)
+            except Exception as exc:
+                await heartbeat.report(http, False, repr(exc))
+                raise
+            # Reported before publishing: an rt-api failure is not upstream's.
+            await heartbeat.report(http, True)
             positions, trip_updates = await publish(config, http, updates)
             # Report what actually shipped, not what upstream returned: vehicles
             # whose trip_id won't resolve are dropped by the source.

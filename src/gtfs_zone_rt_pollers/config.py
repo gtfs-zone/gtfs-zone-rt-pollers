@@ -2,8 +2,8 @@ import os
 
 _AMTRAK_GTFS = "https://content.amtrak.com/content/gtfs/GTFS.zip"
 _COLUMBIA_GTFS = (
-    "https://github.com/columbia-county-ny-transit/gtfs-generator/"
-    "raw/refs/heads/main/columbia_county_gtfs.zip"
+    "https://raw.githubusercontent.com/columbia-county-ny-transit/"
+    "gtfs-generator/refs/heads/main/columbia_county_gtfs.zip"
 )
 _HUDSONLINK_GTFS = "https://s3.amazonaws.com/datatools-511ny/public/Hudson_Link.zip"
 _DEFAULT_GTFS = {"buswhere": _COLUMBIA_GTFS, "hudsonlink": _HUDSONLINK_GTFS}

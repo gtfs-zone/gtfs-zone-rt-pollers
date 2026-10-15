@@ -345,6 +345,23 @@ def test_fetch_warns_once_per_trip_on_upstream_5xx(tmp_path, monkeypatch, caplog
     assert sum("status for T03 failed" in r.getMessage() for r in caplog.records) == 1
 
 
+def test_discover_keeps_a_reused_journey_id_on_each_date(tmp_path, monkeypatch):
+    source = _source(tmp_path, monkeypatch)
+    times = [("TARRYT", "16:57"), ("ELZSTE", "17:01"), ("ARFRN", "17:20")]
+
+    def handler(request):
+        day = request.url.params["dateFrom"]
+        return httpx.Response(200, json={"results": [_journey("j", "H07", times, day)]})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            await source._discover(http, _at(10, 0, d=6))
+
+    asyncio.run(run())
+    assert source._journeys[("T07", "20261005")] == _JourneyRef("j", date(2026, 10, 5))
+    assert source._journeys[("T07", "20261006")] == _JourneyRef("j", date(2026, 10, 6))
+
+
 def _fetch_at(source, monkeypatch, handler, targets):
     monkeypatch.setattr(source._resolver, "trips_near", lambda *a: targets)
     monkeypatch.setattr(

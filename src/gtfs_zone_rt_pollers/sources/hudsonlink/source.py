@@ -146,7 +146,8 @@ class HudsonLinkSource(Source):
         today = now.astimezone(resolver.timezone).date()
         code_for = {stop_id: code for code, stop_id in resolver.stop_codes.items()}
 
-        journeys: dict[str, Journey] = {}
+        # A journey id is reused on every date the trip runs, so key by date too.
+        journeys: dict[tuple[str, date], Journey] = {}
         searched = 0
         failed = 0
         last_error: Exception | None = None
@@ -176,7 +177,7 @@ class HudsonLinkSource(Source):
                     continue
                 for j in results:
                     if j.carrier_code == _CARRIER:
-                        journeys.setdefault(j.id, j)
+                        journeys.setdefault((j.id, j.origin_departure.date()), j)
 
         matched = self._match(list(journeys.values()))
         # Keep earlier matches so a failed search doesn't drop live trips;

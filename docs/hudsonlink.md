@@ -20,7 +20,8 @@ Base `https://api.prod.coachusa.com/`, no auth, responses cached for 60s.
   the date of the searched origin's departure; the wrong date returns `204`.
 
 A journey id is per (trip, searched origin, searched destination), and every
-id of a trip returns the same live status, so one per trip is enough.
+id of a trip returns the same live status, so one per trip is enough. The same
+id is reused on every date the trip runs; the status `date` picks the day.
 
 ## Discovery
 

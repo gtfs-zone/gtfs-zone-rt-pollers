@@ -1,3 +1,10 @@
+## v0.4.1 (2026-10-16)
+
+### Fix
+
+- **hudsonlink**: keep a reused journey id on every date it runs
+- **buswhere**: use raw.githubusercontent.com for the default Columbia County GTFS URL
+
 ## v0.4.0 (2026-10-06)
 
 ### Feat

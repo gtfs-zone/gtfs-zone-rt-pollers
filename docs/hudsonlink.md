@@ -4,6 +4,21 @@ Polls the journey API behind ridehudsonlink.com (CoachUSA's shared platform,
 operator `HSL`) and resolves each trip against Hudson Link's 511NY GTFS by its
 ordered stops and first departure (`resolve_by_pattern`).
 
+## GTFS
+
+The source uses the 511NY feed
+(`https://s3.amazonaws.com/datatools-511ny/public/Hudson_Link.zip`), not
+Trillium's (`https://data.trilliumtransit.com/gtfs/hudsonlink-ny-us/hudsonlink-ny-us.zip`):
+
+- 511NY's `stop_code` is the API's `externalReference`. Trillium's feed has no
+  stop codes.
+- 511NY matches the journey API trip for trip (every trip, Oct 12-18 2026, same
+  stops and first departure). Trillium differed on 440 of 1,986 trip-days.
+- Where they differ, recorded vehicle positions follow 511NY: weekday service
+  ran on Columbus Day (Trillium runs the weekend schedule), H03 trips left
+  Monsey at 511NY's times (Trillium has 12 weekday trips 3-10 minutes off), and
+  buses wait at 511NY's Monsey stop (Trillium's is 457 m away).
+
 ## Endpoints
 
 Base `https://api.prod.coachusa.com/`, no auth, responses cached for 60s.

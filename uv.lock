@@ -298,7 +298,7 @@ wheels = [
 
 [[package]]
 name = "gtfs-zone-rt-pollers"
-version = "0.4.1"
+version = "0.4.2"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

@@ -1,3 +1,10 @@
+## v0.4.2 (2026-10-26)
+
+### Fix
+
+- **amtrak**: retry getTrainsData bodies that decrypt to an empty payload
+- **deps**: upgrade packages with published security advisories
+
 ## v0.4.1 (2026-10-16)
 
 ### Fix

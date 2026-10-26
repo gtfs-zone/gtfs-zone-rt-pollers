@@ -1,5 +1,7 @@
+import asyncio
 import hashlib
 import json
+import logging
 import re
 from base64 import b64decode
 from datetime import UTC, datetime
@@ -9,13 +11,21 @@ import httpx
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 
+from gtfs_zone_rt_pollers.sources.base import UpstreamError
+
 from .models import StopTime, Train, TrainStop
+
+log = logging.getLogger(__name__)
 
 _ROUTES_URL = "https://maps.amtrak.com/rttl/js/RoutesList.json"
 _ROUTES_V_URL = "https://maps.amtrak.com/rttl/js/RoutesList.v.json"
 _TRAINS_URL = "https://maps.amtrak.com/services/MapDataService/trains/getTrainsData"
 
 _MASTER_SEGMENT = 88
+
+# getTrainsData sometimes returns a short body that decrypts to "".
+_EMPTY_ATTEMPTS = 5
+_EMPTY_RETRY_DELAY = 1.0
 
 _crypto_cache: dict | None = None
 
@@ -169,9 +179,11 @@ def _parse_feature(feature: dict) -> Train | None:
     )
 
 
-async def fetch_trains(client: httpx.AsyncClient) -> list[Train]:
-    crypto = await _get_crypto_initializers(client)
-    public_key: str = crypto["public_key"]
+class EmptyTrainsData(UpstreamError):
+    """getTrainsData decrypted to an empty payload on every attempt."""
+
+
+async def _fetch_plaintext(client: httpx.AsyncClient, crypto: dict) -> str:
     salt: bytes = crypto["salt"]
     iv: bytes = crypto["iv"]
 
@@ -180,11 +192,29 @@ async def fetch_trains(client: httpx.AsyncClient) -> list[Train]:
     private_key_cipher = blob[-_MASTER_SEGMENT:]
     ciphertext = blob[:-_MASTER_SEGMENT]
 
-    key1 = _derive_key(public_key, salt)
+    key1 = _derive_key(crypto["public_key"], salt)
     private_key = _aes_decrypt(private_key_cipher, key1, iv).split("|")[0]
 
     key2 = _derive_key(private_key, salt)
-    plaintext = _aes_decrypt(ciphertext, key2, iv)
+    return _aes_decrypt(ciphertext, key2, iv)
+
+
+async def fetch_trains(client: httpx.AsyncClient) -> list[Train]:
+    crypto = await _get_crypto_initializers(client)
+
+    for attempt in range(1, _EMPTY_ATTEMPTS + 1):
+        plaintext = await _fetch_plaintext(client, crypto)
+        if plaintext.strip():
+            break
+        if attempt < _EMPTY_ATTEMPTS:
+            log.warning(
+                "getTrainsData empty (attempt %d/%d), retrying",
+                attempt,
+                _EMPTY_ATTEMPTS,
+            )
+            await asyncio.sleep(_EMPTY_RETRY_DELAY)
+    else:
+        raise EmptyTrainsData(f"getTrainsData empty after {_EMPTY_ATTEMPTS} attempts")
 
     geojson = json.loads(plaintext)
 

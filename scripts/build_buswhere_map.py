@@ -76,13 +76,17 @@ ROUTES: dict[str, str] = {
     "chatham": "Chatham-Hudson",
 }
 
-# Slugs we believe exist but have never seen serve stops. The GTFS has A_AM and
-# D_PM runs, and the confirmed slugs imply this spelling. --watch polls them; the
-# first one that answers is promoted into mapping.json's routes automatically, so
-# a guess that's wrong just stays dormant forever and costs nothing.
+# Slugs we believe exist but have never seen serve stops. The rest are the
+# route_url slugs in buswhere's own GTFS export (copake_ keeps its trailing
+# underscore). --watch polls them; the first one that answers is promoted into
+# mapping.json's routes automatically, so a guess that's wrong just stays
+# dormant forever and costs nothing.
 CANDIDATE_ROUTES: dict[str, str] = {
     "hudson__albany_a_am": "Albany-Commuter",
     "hudson__albany_d_pm": "Albany-Commuter",
+    "shopping_shuttle_sat": "Shopping",
+    "philmont": "Philmont",
+    "copake_": "Ancramdale",
 }
 
 ALL_ROUTES: dict[str, str] = {**ROUTES, **CANDIDATE_ROUTES}

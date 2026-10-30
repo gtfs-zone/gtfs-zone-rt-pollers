@@ -22,7 +22,17 @@
         "HUD_ALB_D_PM_NB",
         "HUD_ALB_D_PM_SB"
       ]
-    }
+    },
+    "hudson__albany_a_am": {
+      "route_id": "Albany-Commuter",
+      "trips": [
+        "HUD_ALB_A_AM_NB",
+        "HUD_ALB_A_AM_SB"
+      ]
+    },
+    "shopping_shuttle_sat": "Shopping",
+    "philmont": "Philmont",
+    "copake_": "Ancramdale"
   },
   "stops": {
     "150765941": "STOP-71fb5365-5e0a-4f14-9d08-14e17e9f49dd",

@@ -94,6 +94,49 @@ def test_resolve_by_route_honors_calendar_dates_removal(tmp_path):
     assert r.resolve_by_route("R", datetime(2024, 1, 2, 8, 30, tzinfo=TZ)) is not None
 
 
+# An outbound 08:00-09:00 and a return 09:15-10:00 with a layover between them,
+# plus another route's trip so allowed_trips has something to exclude.
+_LAYOVER_TRIPS = (
+    "route_id,service_id,trip_id,trip_short_name,shape_id\n"
+    "R,WK,OUT,out,S\n"
+    "R,WK,BACK,back,S\n"
+    "R,WK,OTHER,other,S\n"
+)
+_LAYOVER_TIMES = (
+    "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
+    "OUT,08:00:00,08:00:00,A,0\n"
+    "OUT,09:00:00,09:00:00,B,1\n"
+    "BACK,09:15:00,09:15:00,B,0\n"
+    "BACK,10:00:00,10:00:00,A,1\n"
+    "OTHER,09:05:00,09:05:00,A,0\n"
+    "OTHER,09:30:00,09:30:00,B,1\n"
+)
+
+
+def test_resolve_by_route_layover_resolves_next_trip(tmp_path):
+    r = _write(tmp_path, _LAYOVER_TRIPS, _LAYOVER_TIMES)
+    allowed = {"OUT", "BACK"}
+    at = datetime(2024, 1, 2, 9, 3, tzinfo=TZ)
+    assert r.resolve_by_route("R", at, allowed) == ("BACK", "20240102")
+    # Without the narrowing the sooner OTHER wins.
+    assert r.resolve_by_route("R", at) == ("OTHER", "20240102")
+
+
+def test_resolve_by_route_running_trip_beats_upcoming(tmp_path):
+    r = _write(tmp_path, _LAYOVER_TRIPS, _LAYOVER_TIMES)
+    at = datetime(2024, 1, 2, 8, 58, tzinfo=TZ)
+    assert r.resolve_by_route("R", at, {"OUT", "BACK"}) == ("OUT", "20240102")
+
+
+def test_resolve_by_route_none_beyond_layover_lead(tmp_path):
+    r = _write(tmp_path, _LAYOVER_TRIPS, _LAYOVER_TIMES)
+    assert r.resolve_by_route("R", datetime(2024, 1, 2, 7, 39, tzinfo=TZ)) is None
+    assert r.resolve_by_route("R", datetime(2024, 1, 2, 7, 41, tzinfo=TZ)) == (
+        "OUT",
+        "20240102",
+    )
+
+
 # One 60-minute loop that returns to its origin stop A (seq 0 and seq 3).
 _LOOP_TRIP = "route_id,service_id,trip_id,trip_short_name,shape_id\nR,WK,LOOP,loop,S\n"
 _LOOP_TIMES = (

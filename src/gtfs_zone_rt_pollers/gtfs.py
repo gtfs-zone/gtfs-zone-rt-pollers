@@ -40,6 +40,12 @@ def _parse_gtfs_time(s: str) -> int:
     return int(h) * 3600 + int(m) * 60 + int(sec)
 
 
+# How far ahead resolve_by_route looks for a trip when none is running: a bus
+# laying over or waiting at the origin counts as its next trip. Covers the
+# Albany commuter's 13-minute layover plus an early pull-out.
+_LAYOVER_LEAD = timedelta(minutes=20)
+
+
 def _normalize_route_name(name: str) -> str:
     """Casefold, collapse whitespace (incl. NBSP/narrow-NBSP), drop an "amtrak" prefix.
 
@@ -345,8 +351,10 @@ class GtfsResolver:
         on the route whose service is active, pick the one whose
         [first_dep, last_arr] window contains `now`. Trips on these routes run
         back-to-back, so at most one is running; at a shared boundary second we
-        prefer the just-starting trip (latest window_start). Returns
-        (trip_id, start_date) or None when nothing is scheduled to be running.
+        prefer the just-starting trip (latest window_start). When no window
+        contains `now`, the bus is laying over or waiting to depart, so the trip
+        starting soonest within `_LAYOVER_LEAD` is used. Returns
+        (trip_id, start_date) or None when nothing is running or about to start.
 
         `allowed_trips` narrows the candidates, for when several upstream routes
         share one GTFS route_id and their windows overlap: without it they all
@@ -362,6 +370,7 @@ class GtfsResolver:
 
         local_today = now.astimezone(self._tz).date()
         best: tuple[datetime, str, str] | None = None  # (window_start, trip, sdate)
+        upcoming: tuple[datetime, str, str] | None = None
         # A run can start the previous service day and cross midnight, so look
         # back one day as well as today.
         for lookback in range(2):
@@ -375,17 +384,22 @@ class GtfsResolver:
                 first_dep, last_arr = self._windows.get(trip_id, (0, 0))
                 window_start = service_midnight + timedelta(seconds=first_dep)
                 window_end = service_midnight + timedelta(seconds=last_arr)
+                key = (window_start, trip_id, start_date)
+                if now < window_start <= now + _LAYOVER_LEAD:
+                    if upcoming is None or key < upcoming:
+                        upcoming = key
+                    continue
                 if not (window_start <= now <= window_end):
                     continue
                 # Prefer the most recently started trip; break exact ties on the
                 # boundary second deterministically by trip_id.
-                key = (window_start, trip_id, start_date)
                 if (
                     best is None
                     or key[0] > best[0]
                     or (key[0] == best[0] and trip_id < best[1])
                 ):
                     best = key
+        best = best or upcoming
         if best is None:
             return None
         return best[1], best[2]

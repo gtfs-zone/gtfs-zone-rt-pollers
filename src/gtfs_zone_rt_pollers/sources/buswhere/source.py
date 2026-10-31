@@ -6,13 +6,16 @@ and rewrites buswhere's internal stop IDs to GTFS stop IDs via the committed
 mapping. It never trusts a device-supplied trip.
 
 A route's snapshot also lists buses running *other* routes, so each cycle first
-attributes devices to routes (`_attribute`) and only then builds updates.
+attributes devices to routes (`_attribute`) and only then builds updates. Devices
+that still resolve to the same trip are cut down to one (`_one_per_trip`).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
+import statistics
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
@@ -43,6 +46,13 @@ log = logging.getLogger(__name__)
 # plausible lateness, and it also assigns a twice-visited stop (loop origin =
 # terminus) to the correct occurrence.
 _MAX_SCHEDULE_SKEW = 1800  # seconds
+
+# When several devices resolve to one trip, a device this much further from
+# the trip's scheduled position than the nearest one is not running it (a bus
+# echoed from another route, or parked).
+_TRIP_POSITION_MARGIN = 5000  # metres
+# A stop prediction within this of the schedule counts towards a device's fit.
+_TRIP_FIT_DELAY = 600  # seconds
 
 
 @dataclass(frozen=True)
@@ -76,6 +86,27 @@ def _load_mapping() -> tuple[dict[str, _RouteMapping], dict[str, str], set[str]]
 def _distance_sq(a: tuple[float, float], b: tuple[float, float]) -> float:
     """Squared degree distance. Only ever compared, never reported."""
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+
+
+def _distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Equirectangular distance in metres, accurate at a county's scale."""
+    lat = math.radians((a[0] + b[0]) / 2)
+    dx = math.radians(b[1] - a[1]) * math.cos(lat)
+    dy = math.radians(b[0] - a[0])
+    return 6_371_000 * math.hypot(dx, dy)
+
+
+def _schedule_fit(update: VehicleUpdate) -> tuple[int, float]:
+    """How well a device's predictions match its trip; higher is better.
+
+    The count of stops predicted within `_TRIP_FIT_DELAY` of schedule, then the
+    smaller median delay. A device with no predictions ranks last.
+    """
+    delays = [abs(u.arrival_delay or 0) for u in update.stop_time_updates]
+    if not delays:
+        return 0, -math.inf
+    close = sum(d <= _TRIP_FIT_DELAY for d in delays)
+    return close, -statistics.median(delays)
 
 
 def _attribute(
@@ -133,6 +164,51 @@ class BuswhereSource(Source):
             self._config.gtfs_url, Path(self._config.gtfs_path), http
         )
         self._resolver = GtfsResolver(gtfs_path)
+
+    def _one_per_trip(self, updates: list[VehicleUpdate]) -> list[VehicleUpdate]:
+        """Keep one device per trip instance, dropping the rest.
+
+        The trips on a route run one bus at a time, so a second device on the
+        same trip is a bus parked at the garage, echoed from another route, or
+        swapping in. Devices far from where the schedule puts the trip are ruled
+        out first, since buswhere's ETAs can fit the wrong bus; the device whose
+        ETAs best fit the schedule then wins.
+        """
+        resolver = self._resolver
+        assert resolver is not None
+        by_trip: dict[tuple[str, str | None], list[VehicleUpdate]] = {}
+        for u in updates:
+            by_trip.setdefault((u.trip_id, u.start_date), []).append(u)
+
+        kept: list[VehicleUpdate] = []
+        for (trip_id, start_date), sharing in by_trip.items():
+            candidates = sharing
+            if len(sharing) > 1 and start_date is not None:
+                distances: dict[str, float] = {}
+                for u in sharing:
+                    at = datetime.fromtimestamp(u.timestamp, tz=UTC)
+                    pos = resolver.scheduled_position(trip_id, start_date, at)
+                    if pos is not None:
+                        distances[u.vehicle_id] = _distance_m((u.lat, u.lon), pos)
+                if len(distances) == len(sharing):
+                    limit = min(distances.values()) + _TRIP_POSITION_MARGIN
+                    candidates = [
+                        u for u in sharing if distances[u.vehicle_id] <= limit
+                    ]
+            if len(sharing) > 1:
+                # Sorted first so a tie goes to the same device every cycle.
+                winner = max(
+                    sorted(candidates, key=lambda u: u.vehicle_id), key=_schedule_fit
+                )
+                log.debug(
+                    "buswhere: %s kept %s, dropped %d other device(s)",
+                    trip_id,
+                    winner.vehicle_id,
+                    len(sharing) - 1,
+                )
+                candidates = [winner]
+            kept.extend(candidates)
+        return kept
 
     def _build(
         self,
@@ -262,6 +338,8 @@ class BuswhereSource(Source):
                     unresolved.add(slug)
                     continue
                 updates.append(update)
+
+        updates = self._one_per_trip(updates)
 
         if unresolved:
             log.warning(

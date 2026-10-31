@@ -37,3 +37,10 @@ top-level `stop_eta` is an aggregate across all of them. `BuswhereSource` yields
 one observation per device with ETAs taken from `other_routes_stop_eta`, then
 attributes each device to the route whose `current` position it is nearest to;
 a device another route claims is dropped from this one.
+
+Devices that still resolve to the same trip (a bus parked at the garage, an
+Albany bus echoed into the shopping snapshot, a bus swap) are cut down to one
+(`_one_per_trip`). A device more than 5 km further from the trip's scheduled
+position than the nearest one is ruled out, since buswhere keeps ETAs for stops
+a bus has passed and they can fit the wrong bus. Of the rest, the device with
+the most stops predicted within 10 minutes of schedule wins.

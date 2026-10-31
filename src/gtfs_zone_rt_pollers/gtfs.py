@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 import logging
 import zipfile
 from dataclasses import dataclass
@@ -99,6 +100,8 @@ class GtfsResolver:
         # stop_code -> stop_id, for providers that name stops by their public
         # code (Hudson Link).
         self._stop_codes: dict[str, str] = {}
+        # stop_id -> (lat, lon), for placing a trip where its schedule says it is.
+        self._stop_coords: dict[str, tuple[float, float]] = {}
         # (ordered stop_id tuple, first departure secs) -> [trip_id], for
         # providers that identify a trip only by its pattern and start time.
         self._trips_by_pattern: dict[tuple[tuple[str, ...], int], list[str]] = {}
@@ -169,7 +172,12 @@ class GtfsResolver:
             for row in csv.DictReader(io.StringIO(self._read_file(path, "stops.txt"))):
                 if row.get("stop_code"):
                     self._stop_codes[row["stop_code"]] = row["stop_id"]
-        except (KeyError, OSError) as exc:
+                if row.get("stop_lat") and row.get("stop_lon"):
+                    self._stop_coords[row["stop_id"]] = (
+                        float(row["stop_lat"]),
+                        float(row["stop_lon"]),
+                    )
+        except (KeyError, OSError, ValueError) as exc:
             log.debug("no stops.txt (%s)", exc)
 
         for row in csv.DictReader(io.StringIO(self._read_file(path, "trips.txt"))):
@@ -338,6 +346,32 @@ class GtfsResolver:
             (seq, stop_id, int((midnight + timedelta(seconds=arr)).timestamp()))
             for seq, stop_id, arr in sched
         ]
+
+    def scheduled_position(
+        self, trip_id: str, start_date: str, at: datetime
+    ) -> tuple[float, float] | None:
+        """(lat, lon) where the trip's schedule puts it at `at`.
+
+        Interpolated in a straight line between consecutive stops by scheduled
+        arrival, and clamped to the first or last stop outside the trip's window.
+        None if the trip is unknown or a stop on it has no coordinates.
+        """
+        points: list[tuple[int, tuple[float, float]]] = []
+        for _, stop_id, scheduled in self.trip_schedule(trip_id, start_date):
+            coords = self._stop_coords.get(stop_id)
+            if coords is None:
+                return None
+            points.append((scheduled, coords))
+        if not points:
+            return None
+        t = at.timestamp()
+        if t <= points[0][0]:
+            return points[0][1]
+        for (t0, (lat0, lon0)), (t1, (lat1, lon1)) in itertools.pairwise(points):
+            if t <= t1:
+                f = (t - t0) / (t1 - t0) if t1 > t0 else 1.0
+                return lat0 + f * (lat1 - lat0), lon0 + f * (lon1 - lon0)
+        return points[-1][1]
 
     def resolve_by_route(
         self,

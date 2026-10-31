@@ -561,3 +561,69 @@ def test_attribute_prefers_the_closer_claim():
         owned = _attribute(snapshots)
         assert [o.device_id for o in owned["joined"]] == [_C12]
         assert owned["left"] == []
+
+
+_LOOP_STOPS = (
+    "stop_id,stop_name,stop_lat,stop_lon\n"
+    "A,A,42.25,-73.79\n"
+    "B,B,42.25,-73.70\n"
+    "C,C,42.30,-73.70\n"
+)
+
+
+def test_scheduled_position_interpolates_and_clamps(tmp_path):
+    (tmp_path / "stops.txt").write_text(_LOOP_STOPS)
+    r = _write(tmp_path, _LOOP_TRIP, _LOOP_TIMES)
+
+    def at(h, m):
+        return r.scheduled_position(
+            "LOOP", "20240102", datetime(2024, 1, 2, h, m, tzinfo=TZ)
+        )
+
+    assert at(8, 10) == pytest.approx((42.25, -73.745))
+    assert at(8, 50) == pytest.approx((42.275, -73.745))
+    assert at(7, 0) == (42.25, -73.79)
+    assert at(10, 0) == (42.25, -73.79)
+    assert (
+        r.scheduled_position("NOPE", "20240102", datetime(2024, 1, 2, 8, tzinfo=TZ))
+        is None
+    )
+
+
+def _shared_trip_fetch(src, monkeypatch, observations):
+    async def fake_fetch_route(http, slug, base_url=None):
+        return observations
+
+    src._slugs = ["testslug"]
+    monkeypatch.setattr(buswhere_source_mod, "fetch_route", fake_fetch_route)
+    return asyncio.run(src.fetch(None))
+
+
+def test_fetch_keeps_one_device_per_trip_by_schedule_fit(tmp_path, monkeypatch):
+    # Both devices resolve to LOOP at 08:25; only the one whose ETA to C matches
+    # the 08:40 schedule is publishing it.
+    src = _buswhere_source(tmp_path, monkeypatch)
+    ts = int(datetime(2024, 1, 2, 8, 25, tzinfo=TZ).timestamp())
+    late = BuswhereObservation(
+        lat=42.26, lon=-73.70, timestamp=ts, stop_eta={"bwC": 40 * 60}, device_id=1
+    )
+    on_time = BuswhereObservation(
+        lat=42.27, lon=-73.70, timestamp=ts, stop_eta={"bwC": 15 * 60}, device_id=2
+    )
+    updates = _shared_trip_fetch(src, monkeypatch, [late, on_time])
+    assert [u.vehicle_id for u in updates] == ["testslug:2"]
+
+
+def test_fetch_rules_out_devices_far_from_the_scheduled_position(tmp_path, monkeypatch):
+    # A bus in Albany whose ETAs happen to fit loses to the one on the loop.
+    (tmp_path / "stops.txt").write_text(_LOOP_STOPS)
+    src = _buswhere_source(tmp_path, monkeypatch)
+    ts = int(datetime(2024, 1, 2, 8, 25, tzinfo=TZ).timestamp())
+    on_loop = BuswhereObservation(
+        lat=42.26, lon=-73.70, timestamp=ts, stop_eta={"bwC": 40 * 60}, device_id=1
+    )
+    in_albany = BuswhereObservation(
+        lat=42.65, lon=-73.76, timestamp=ts, stop_eta={"bwC": 15 * 60}, device_id=2
+    )
+    updates = _shared_trip_fetch(src, monkeypatch, [in_albany, on_loop])
+    assert [u.vehicle_id for u in updates] == ["testslug:1"]

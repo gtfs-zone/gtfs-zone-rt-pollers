@@ -1,3 +1,9 @@
+## v0.4.3 (2026-10-31)
+
+### Fix
+
+- **buswhere**: poll the A AM, Saturday shopping, Philmont and Copake routes
+
 ## v0.4.2 (2026-10-26)
 
 ### Fix

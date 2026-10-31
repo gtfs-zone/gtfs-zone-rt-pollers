@@ -1,3 +1,10 @@
+## v0.4.4 (2026-10-31)
+
+### Fix
+
+- **buswhere**: keep one device per trip
+- **buswhere**: resolve a bus between trips to the route's next trip
+
 ## v0.4.3 (2026-10-31)
 
 ### Fix

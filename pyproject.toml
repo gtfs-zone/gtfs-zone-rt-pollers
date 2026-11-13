@@ -8,6 +8,7 @@ dependencies = [
     "httpx>=0.28",
     "cryptography>=44",
     "beautifulsoup4>=4.15.0",
+    "tzfpy>=2.1.2",
 ]
 
 [dependency-groups]

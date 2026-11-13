@@ -1,8 +1,9 @@
-"""fetch_trains: retries getTrainsData bodies that decrypt to an empty payload."""
+"""fetch_trains: empty-payload retries and LastValTS time zones."""
 
 import asyncio
 import json
 from base64 import b64encode
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -73,3 +74,73 @@ def test_empty_payload_is_retried(monkeypatch):
 def test_empty_on_every_attempt_raises(monkeypatch):
     with pytest.raises(EmptyTrainsData):
         _fetch(monkeypatch, [""] * client._EMPTY_ATTEMPTS)
+
+
+_NOW = datetime(2026, 11, 13, 18, 30, tzinfo=UTC)
+
+
+def _feature(lon, lat, last_val, stations=()):
+    props = {"TrainNum": "1", "LastValTS": last_val}
+    for i, (code, tz, postdep) in enumerate(stations, 1):
+        props[f"Station{i}"] = json.dumps({"code": code, "tz": tz, "postdep": postdep})
+    return {"geometry": {"coordinates": [lon, lat]}, "properties": props}
+
+
+@pytest.mark.parametrize(
+    ("lon", "lat", "utc_hour"),
+    [
+        (-73.99, 40.75, 15),  # New York, EST
+        (-87.63, 41.88, 16),  # Chicago, CST
+        (-104.99, 39.74, 17),  # Denver, MST
+        (-111.65, 35.20, 17),  # Flagstaff, Arizona MST without DST
+        (-118.24, 34.05, 18),  # Los Angeles, PST
+        (-30.0, 30.0, 15),  # open ocean falls back to Eastern
+    ],
+)
+def test_last_val_read_in_local_zone(lon, lat, utc_hour):
+    train = client._parse_feature(_feature(lon, lat, "11/13/2026 10:16:40 AM"), _NOW)
+    assert train.timestamp == datetime(2026, 11, 13, utc_hour, 16, 40, tzinfo=UTC)
+
+
+def test_last_val_around_dst_fall_back():
+    # 2026-11-01 01:30 happens twice in Los Angeles; the first (PDT) is taken.
+    now = datetime(2026, 11, 1, 12, tzinfo=UTC)
+    feature = _feature(-118.24, 34.05, "11/1/2026 1:30:00 AM")
+    assert client._parse_feature(feature, now).timestamp == datetime(
+        2026, 11, 1, 8, 30, tzinfo=UTC
+    )
+    feature = _feature(-118.24, 34.05, "11/1/2026 3:00:00 AM")
+    assert client._parse_feature(feature, now).timestamp == datetime(
+        2026, 11, 1, 11, 0, tzinfo=UTC
+    )
+
+
+def test_eastern_stamp_in_pacific_zone():
+    # Pacific would put the fix three hours after the poll.
+    feature = _feature(-121.94, 38.32, "11/13/2026 1:25:40 PM")
+    assert client._parse_feature(feature, _NOW).timestamp == datetime(
+        2026, 11, 13, 18, 25, 40, tzinfo=UTC
+    )
+
+
+def test_next_stop_zone_near_zone_line():
+    # Williston ND is Central; the train already stamps the next stop's Mountain.
+    stations = [("WTN", "C", "11/13/2026 11:59:00"), ("WPT", "M", None)]
+    feature = _feature(-103.68, 48.13, "11/13/2026 11:25:39 AM", stations)
+    assert client._parse_feature(feature, _NOW).timestamp == datetime(
+        2026, 11, 13, 18, 25, 39, tzinfo=UTC
+    )
+
+
+def test_stale_fix_keeps_local_zone():
+    feature = _feature(-118.24, 34.05, "11/13/2026 7:00:00 AM")
+    assert client._parse_feature(feature, _NOW).timestamp == datetime(
+        2026, 11, 13, 15, 0, tzinfo=UTC
+    )
+
+
+def test_future_fix_keeps_local_zone():
+    feature = _feature(-71.06, 42.35, "11/13/2026 4:45:00 PM")
+    assert client._parse_feature(feature, _NOW).timestamp == datetime(
+        2026, 11, 13, 21, 45, tzinfo=UTC
+    )

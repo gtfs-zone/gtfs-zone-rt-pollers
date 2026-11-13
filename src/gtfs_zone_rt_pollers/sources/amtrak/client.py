@@ -4,12 +4,13 @@ import json
 import logging
 import re
 from base64 import b64decode
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
+from tzfpy import get_tz
 
 from gtfs_zone_rt_pollers.sources.base import UpstreamError
 
@@ -35,6 +36,9 @@ _TZ_MAP = {
     "C": "America/Chicago",
     "E": "America/New_York",
 }
+
+# Slack for clock skew when rejecting LastValTS readings that land after the poll.
+_FUTURE_SLACK = timedelta(seconds=120)
 
 # LastValTS is 12-hour with an AM/PM suffix ("8/2/2026 9:45:39 AM"); the Station*
 # sub-JSON dates are 24-hour zero-padded ("07/31/2026 08:25:00").
@@ -71,10 +75,42 @@ def _aes_decrypt(ciphertext_b64: str, key: bytes, iv: bytes) -> str:
     return (unpadder.update(padded) + unpadder.finalize()).decode()
 
 
+def _zone_at(lon: float, lat: float) -> str:
+    """IANA zone at a point; Eastern when the point is outside any land zone."""
+    name = get_tz(lon, lat)
+    if not name or name.startswith("Etc/"):
+        return "America/New_York"
+    return name
+
+
+def _fix_time(
+    last_val: str, lon: float, lat: float, stops: list[TrainStop], now: datetime
+) -> datetime | None:
+    """Read LastValTS, whose zone Amtrak does not state.
+
+    It is usually the zone at the train's position, but some trains stamp
+    Eastern, and near a zone line the zone of the last or next stop. Each
+    candidate is tried and the latest reading not after the poll wins; when
+    all land in the future, the zone at the position is used.
+    """
+    geo = _zone_at(lon, lat)
+    zones = [geo, "America/New_York"]
+    passed = [s for s in stops if s.status in ("departed", "arrived")]
+    upcoming = [s for s in stops if s.status not in ("departed", "arrived")]
+    zones += [s.timezone for s in passed[-1:] + upcoming[:1]]
+    readings = [_parse_local(last_val, z) for z in dict.fromkeys(zones)]
+    past = [r for r in readings if r is not None and r <= now + _FUTURE_SLACK]
+    return max(past) if past else readings[0]
+
+
 def _parse_date(ugly_date: str | None, tz: str) -> datetime | None:
+    return _parse_local(ugly_date, _TZ_MAP.get(tz.upper(), "America/New_York"))
+
+
+def _parse_local(ugly_date: str | None, zone_name: str) -> datetime | None:
     if not ugly_date:
         return None
-    zone = ZoneInfo(_TZ_MAP.get(tz.upper(), "America/New_York"))
+    zone = ZoneInfo(zone_name)
     for fmt in _DATE_FORMATS:
         try:
             local = datetime.strptime(ugly_date, fmt).replace(tzinfo=zone)
@@ -111,7 +147,7 @@ def _parse_stop(station_json: str, tz_hint: str = "E") -> TrainStop | None:
     )
 
 
-def _parse_feature(feature: dict) -> Train | None:
+def _parse_feature(feature: dict, now: datetime) -> Train | None:
     geometry = feature.get("geometry")
     if not geometry or not geometry.get("coordinates"):
         return None
@@ -161,11 +197,11 @@ def _parse_feature(feature: dict) -> Train | None:
     last_val = props.get("LastValTS")
     if last_val:
         try:
-            timestamp = _parse_date(last_val, "E") or datetime.now(UTC)
+            timestamp = _fix_time(last_val, lon, lat, stops, now) or now
         except ValueError:
-            timestamp = datetime.now(UTC)
+            timestamp = now
     else:
-        timestamp = datetime.now(UTC)
+        timestamp = now
 
     return Train(
         train_num=str(props.get("TrainNum", "")),
@@ -218,9 +254,10 @@ async def fetch_trains(client: httpx.AsyncClient) -> list[Train]:
 
     geojson = json.loads(plaintext)
 
+    now = datetime.now(UTC)
     trains: list[Train] = []
     for feature in geojson.get("features", []):
-        train = _parse_feature(feature)
+        train = _parse_feature(feature, now)
         if train is not None:
             trains.append(train)
     return trains

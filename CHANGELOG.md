@@ -1,3 +1,9 @@
+## v0.4.5 (2026-11-13)
+
+### Fix
+
+- **amtrak**: read LastValTS in the train's local zone
+
 ## v0.4.4 (2026-10-31)
 
 ### Fix

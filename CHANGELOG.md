@@ -1,3 +1,9 @@
+## v0.5.0 (2026-11-22)
+
+### Feat
+
+- TRIP_UPDATES=off posts positions only
+
 ## v0.4.5 (2026-11-13)
 
 ### Fix

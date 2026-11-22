@@ -48,6 +48,7 @@ pre-commit install   # install git hooks (run once after clone)
 | `RT_API_INGEST_URL` | rt-api ingest base URL; publishing no-ops if unset |
 | `INGEST_API_TOKEN` | Bearer token for the ingest API |
 | `INGEST_TRACKER_ID` | Must equal an rt-api `Tracker.id` (the surrogate, not the `device_key`). `INGEST_VEHICLE_ID` is the old name and still works |
+| `TRIP_UPDATES` | `upstream` (default) posts the source's per-stop predictions; `off` posts positions only and leaves prediction to rt-delay-estimator |
 | `GTFS_URL` | GTFS zip URL (defaults per source) |
 | `GTFS_PATH` | GTFS cache path (dir or `.zip`) |
 | `ROUTE_FILTER` | amtrak-only: comma-separated RouteName allowlist |

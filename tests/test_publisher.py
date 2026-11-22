@@ -230,3 +230,15 @@ def test_publishing_without_an_ingest_url_is_a_no_op(monkeypatch):
 
     assert asyncio.run(publish(Config(), http, [_update()])) == (0, 0)
     assert http.calls == []
+
+
+def test_trip_updates_off_posts_positions_only(config, monkeypatch):
+    monkeypatch.setenv("TRIP_UPDATES", "off")
+    config = Config()
+    http = FakeHttp()
+    update = _update(
+        stop_time_updates=[StopTimeUpdate(stop_id="S4", arrival_time=1_700_000_300)]
+    )
+    sent = asyncio.run(publish(config, http, [update]))
+    assert sent == (1, 0)
+    assert [url for url, _ in http.calls] == ["http://rt-api/ingest/positions"]

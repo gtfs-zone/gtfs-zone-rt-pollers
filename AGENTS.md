@@ -31,6 +31,8 @@ in [README.md](README.md).
   (`heartbeat.py`). A source's `fetch()` raises (`UpstreamError` when it
   skips failures one by one) only when the upstream could not be read at all;
   an empty but reachable upstream is a success.
+- `TRIP_UPDATES=off` hands prediction to rt-delay-estimator: the poller
+  posts positions only.
 - `INGEST_TRACKER_ID` is an rt-api `Tracker.id` (the surrogate, never the
   `device_key`). rt-api's `scripts/provision_source.py` creates the tracker and
   prints it.

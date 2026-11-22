@@ -138,6 +138,8 @@ async def publish(
         "positions",
         [_position_body(v) for v in updates],
     )
+    if config.trip_updates == "off":
+        return positions, 0
     trip_updates = await _post_chunks(
         http,
         f"{base}/ingest/trip-updates",

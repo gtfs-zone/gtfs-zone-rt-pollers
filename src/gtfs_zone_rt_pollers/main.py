@@ -91,7 +91,7 @@ async def _alerts_poll_loop(
 async def main() -> None:
     config = Config()
     source = build_source(config)
-    log.info("starting source %s", source.name)
+    log.info("starting source %s, trip updates %s", source.name, config.trip_updates)
     try:
         async with httpx.AsyncClient(timeout=config.http_timeout) as http:
             await source.startup(http)

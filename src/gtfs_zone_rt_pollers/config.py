@@ -9,6 +9,7 @@ _HUDSONLINK_GTFS = "https://s3.amazonaws.com/datatools-511ny/public/Hudson_Link.
 _DEFAULT_GTFS = {"buswhere": _COLUMBIA_GTFS, "hudsonlink": _HUDSONLINK_GTFS}
 # Hudson Link's API caches responses for 60s.
 _DEFAULT_POLL_INTERVAL = {"hudsonlink": "60"}
+_TRIP_UPDATES_MODES = {"upstream", "off"}
 
 
 class Config:
@@ -49,6 +50,14 @@ class Config:
         self.tracker_id: str = os.environ.get("INGEST_TRACKER_ID") or os.environ.get(
             "INGEST_VEHICLE_ID", "amtrakdriver"
         )
+        # `upstream` posts the source's own per-stop predictions; `off` posts
+        # positions only and leaves prediction to rt-delay-estimator.
+        self.trip_updates: str = os.environ.get("TRIP_UPDATES", "upstream").lower()
+        if self.trip_updates not in _TRIP_UPDATES_MODES:
+            raise ValueError(
+                f"TRIP_UPDATES must be one of {sorted(_TRIP_UPDATES_MODES)}, "
+                f"got {self.trip_updates!r}"
+            )
         # GTFS default follows the source: Amtrak's national feed, the Columbia
         # County feed we control (not the one buswhere uses internally), or
         # Hudson Link's 511NY feed.

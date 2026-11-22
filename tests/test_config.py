@@ -1,4 +1,6 @@
-"""Config: the tracker id rename and per-source defaults."""
+"""Config: the tracker id rename, per-source defaults and the trip updates mode."""
+
+import pytest
 
 from gtfs_zone_rt_pollers.config import Config
 
@@ -32,3 +34,14 @@ def test_hudsonlink_defaults(monkeypatch):
     config = Config()
     assert config.poll_interval == 60
     assert config.gtfs_url.endswith("/Hudson_Link.zip")
+
+
+def test_trip_updates_defaults_to_upstream(monkeypatch):
+    monkeypatch.delenv("TRIP_UPDATES", raising=False)
+    assert Config().trip_updates == "upstream"
+
+
+def test_an_unknown_trip_updates_mode_fails_at_startup(monkeypatch):
+    monkeypatch.setenv("TRIP_UPDATES", "sometimes")
+    with pytest.raises(ValueError, match="TRIP_UPDATES"):
+        Config()

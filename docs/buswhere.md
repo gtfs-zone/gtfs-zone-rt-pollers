@@ -1,12 +1,8 @@
 # buswhere source
 
-Polls buswhere.com for Columbia County (NY), resolves by route and scheduled
-window (`resolve_by_route`), and rewrites buswhere stop IDs to the Columbia
-County GTFS via `sources/buswhere/mapping.json`.
-
-A bus between trips (the Albany commuter's layover in Albany, or waiting at
-the origin before its first departure) resolves to the route's next trip when
-it starts within 20 minutes (`_LAYOVER_LEAD`).
+Polls buswhere.com for Columbia County (NY), assigns each bus to a trip by its
+position (`sources/buswhere/assign.py`), and rewrites buswhere stop IDs to the
+Columbia County GTFS via `sources/buswhere/mapping.json`.
 
 ## The stop map
 
@@ -17,9 +13,8 @@ live and captures it then, saving after every catch.
 
 `mapping.json` has three keys:
 
-- `routes`: slug -> `route_id`, or `{"route_id": ..., "trips": [...]}` when
-  several slugs share one route_id with overlapping windows (the Albany
-  commuter runs), which `resolve_by_route`'s `allowed_trips` then narrows.
+- `routes`: slug -> `route_id`. The four Albany commuter slugs all map to
+  Albany-Commuter.
 - `stops`: buswhere stop id -> GTFS stop id.
 - `unmapped`: buswhere stop ids reviewed and found to have no GTFS counterpart
   at all (the northernmost "Greenport" point on each Albany run). Listed so the
@@ -30,17 +25,25 @@ live and captures it then, saving after every catch.
   so buswhere's matching points map to those, even where buswhere's pin is far
   from the GTFS one (Columbiaville is ~1.1 km off).
 
-## Device attribution
+## Trip assignment
 
-A route's live snapshot lists buses running *other* routes too, and its
-top-level `stop_eta` is an aggregate across all of them. `BuswhereSource` yields
-one observation per device with ETAs taken from `other_routes_stop_eta`, then
-attributes each device to the route whose `current` position it is nearest to;
-a device another route claims is dropped from this one.
+A route's live snapshot lists buses running other routes too, and drivers log
+into the wrong route (C AM run from the A AM slug), so a snapshot only says
+which routes a bus may be on. Each cycle the source takes every device's newest
+fix across all snapshots and `TripAssigner` matches it to a trip on those
+routes:
 
-Devices that still resolve to the same trip (a bus parked at the garage, an
-Albany bus echoed into the shopping snapshot, a bus swap) are cut down to one
-(`_one_per_trip`). A device more than 5 km further from the trip's scheduled
-position than the nearest one is ruled out, since buswhere keeps ETAs for stops
-a bus has passed and they can fit the wrong bus. Of the rest, the device with
-the most stops predicted within 10 minutes of schedule wins.
+- The cost of a trip is the distance from the bus to where the trip's schedule
+  puts it at some time tau, plus 50 m per minute between tau and the fix. tau
+  ranges over the trip, from 75 minutes behind the fix to 20 minutes ahead (a
+  bus laying over takes its next trip). Positions follow `shapes.txt`.
+- A trip more than 600 m away does not fit, nor one the bus's fix 1-5 minutes
+  earlier is not on (a bus running the same road the other way).
+- Pairs are taken greedily by cost, one bus per trip. A bus keeps its trip
+  while it fits and has not reached the last stop, and a trip released within
+  10 minutes of its end after 5 minutes assigned is not handed out again.
+- A bus that moved less than 150 m in 10 minutes is parked and only takes a
+  trip it is waiting to start. Fixes older than 3 minutes are not assigned, and
+  a fix older than one already published is dropped.
+- `vehicle_id` is buswhere's `device_id`, the same whichever route the bus is
+  logged into.

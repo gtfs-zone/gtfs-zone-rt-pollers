@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import bisect
 import csv
 import io
 import itertools
 import logging
+import math
 import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -41,10 +43,120 @@ def _parse_gtfs_time(s: str) -> int:
     return int(h) * 3600 + int(m) * 60 + int(sec)
 
 
-# How far ahead resolve_by_route looks for a trip when none is running: a bus
-# laying over or waiting at the origin counts as its next trip. Covers the
-# Albany commuter's 13-minute layover plus an early pull-out.
-_LAYOVER_LEAD = timedelta(minutes=20)
+def distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Equirectangular distance in metres, accurate at a county's scale."""
+    lat = math.radians((a[0] + b[0]) / 2)
+    dx = math.radians(b[1] - a[1]) * math.cos(lat)
+    dy = math.radians(b[0] - a[0])
+    return 6_371_000 * math.hypot(dx, dy)
+
+
+def _project(
+    p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
+) -> tuple[float, float]:
+    """(distance in metres from p to segment ab, fraction along ab)."""
+    k = math.cos(math.radians(p[0]))
+    ax, ay = (a[1] - p[1]) * k, a[0] - p[0]
+    bx, by = (b[1] - p[1]) * k, b[0] - p[0]
+    dx, dy = bx - ax, by - ay
+    seg = dx * dx + dy * dy
+    f = 0.0 if seg == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / seg))
+    return math.radians(math.hypot(ax + f * dx, ay + f * dy)) * 6_371_000, f
+
+
+# Metres of distance-to-shape a stop's projection trades for each metre it
+# skips ahead, so a stop on a road the shape covers twice lands on the first
+# pass after the previous stop.
+_SKIP_PENALTY = 0.02
+
+
+@dataclass(frozen=True)
+class TripPath:
+    """A trip's geometry with its stops placed along it.
+
+    `stops` is [(scheduled arrival, seconds since service midnight; metres
+    along the path)], in stop order and never moving backwards along the path.
+    """
+
+    points: list[tuple[float, float]]
+    cum: list[float]  # metres along the path at each point
+    stops: list[tuple[int, float]]
+
+    @property
+    def start(self) -> int:
+        return self.stops[0][0]
+
+    @property
+    def end(self) -> int:
+        return self.stops[-1][0]
+
+    def point_at(self, along: float) -> tuple[float, float]:
+        """(lat, lon) `along` metres into the path, clamped to its ends."""
+        if len(self.points) == 1:
+            return self.points[0]
+        j = bisect.bisect_right(self.cum, along) - 1
+        j = max(0, min(j, len(self.points) - 2))
+        seg = self.cum[j + 1] - self.cum[j]
+        f = max(0.0, min(1.0, (along - self.cum[j]) / seg)) if seg > 0 else 0.0
+        (lat0, lon0), (lat1, lon1) = self.points[j], self.points[j + 1]
+        return lat0 + f * (lat1 - lat0), lon0 + f * (lon1 - lon0)
+
+    def position(self, secs: float) -> tuple[float, float]:
+        """Where the schedule puts the trip `secs` after service midnight.
+
+        Interpolated along the path between consecutive stops by scheduled
+        arrival, and clamped to the first or last stop outside the trip.
+        """
+        stops = self.stops
+        if secs <= stops[0][0]:
+            return self.point_at(stops[0][1])
+        i = bisect.bisect_left(stops, (secs, -math.inf))
+        if i >= len(stops):
+            return self.point_at(stops[-1][1])
+        (t0, a0), (t1, a1) = stops[i - 1], stops[i]
+        f = (secs - t0) / (t1 - t0) if t1 > t0 else 1.0
+        return self.point_at(a0 + f * (a1 - a0))
+
+
+def _build_path(
+    shape: list[tuple[float, float]] | None,
+    stops: list[tuple[int, tuple[float, float]]],
+) -> TripPath:
+    """Place a trip's stops along its shape, or join the stops when it has none."""
+    if not shape or len(shape) < 2:
+        points = [c for _, c in stops]
+        cum = [0.0]
+        for a, b in itertools.pairwise(points):
+            cum.append(cum[-1] + distance_m(a, b))
+        return TripPath(points, cum, [(t, cum[i]) for i, (t, _) in enumerate(stops)])
+
+    cum = [0.0]
+    for a, b in itertools.pairwise(shape):
+        cum.append(cum[-1] + distance_m(a, b))
+    placed: list[tuple[int, float]] = []
+    j0, along0 = 0, 0.0
+    for t, c in stops:
+        best: tuple[float, int, float] | None = None  # (cost, segment, along)
+        for j in range(j0, len(shape) - 1):
+            if best is not None and (cum[j] - along0) * _SKIP_PENALTY > best[0]:
+                break  # every later segment costs more in skipping alone
+            d, f = _project(c, shape[j], shape[j + 1])
+            along = cum[j] + f * (cum[j + 1] - cum[j])
+            if along < along0:
+                # The projection falls behind the previous stop: hold it there.
+                seg = cum[j + 1] - cum[j]
+                f = (along0 - cum[j]) / seg if seg > 0 else 0.0
+                (lat0, lon0), (lat1, lon1) = shape[j], shape[j + 1]
+                d = distance_m(c, (lat0 + f * (lat1 - lat0), lon0 + f * (lon1 - lon0)))
+                along = along0
+            cost = d + (along - along0) * _SKIP_PENALTY
+            if best is None or cost < best[0]:
+                best = (cost, j, along)
+        if best is None:
+            best = (0.0, j0, along0)
+        _, j0, along0 = best
+        placed.append((t, along0))
+    return TripPath(shape, cum, placed)
 
 
 def _normalize_route_name(name: str) -> str:
@@ -102,6 +214,10 @@ class GtfsResolver:
         self._stop_codes: dict[str, str] = {}
         # stop_id -> (lat, lon), for placing a trip where its schedule says it is.
         self._stop_coords: dict[str, tuple[float, float]] = {}
+        # shape_id -> ordered [(lat, lon)], and trip_id -> shape_id.
+        self._shapes: dict[str, list[tuple[float, float]]] = {}
+        self._trip_shapes: dict[str, str] = {}
+        self._paths: dict[str, TripPath | None] = {}
         # (ordered stop_id tuple, first departure secs) -> [trip_id], for
         # providers that identify a trip only by its pattern and start time.
         self._trips_by_pattern: dict[tuple[tuple[str, ...], int], list[str]] = {}
@@ -190,6 +306,25 @@ class GtfsResolver:
             if row.get("route_id"):
                 self._trip_routes[trip_id] = row["route_id"]
                 self._trips_by_route.setdefault(row["route_id"], []).append(trip_id)
+            if row.get("shape_id"):
+                self._trip_shapes[trip_id] = row["shape_id"]
+
+        # shapes.txt is optional; a trip without one is placed on straight
+        # lines between its stops.
+        try:
+            raw: dict[str, list[tuple[int, float, float]]] = {}
+            for row in csv.DictReader(io.StringIO(self._read_file(path, "shapes.txt"))):
+                raw.setdefault(row["shape_id"], []).append(
+                    (
+                        int(row["shape_pt_sequence"]),
+                        float(row["shape_pt_lat"]),
+                        float(row["shape_pt_lon"]),
+                    )
+                )
+            for shape_id, pts in raw.items():
+                self._shapes[shape_id] = [(lat, lon) for _, lat, lon in sorted(pts)]
+        except (KeyError, OSError, ValueError) as exc:
+            log.debug("no shapes.txt (%s)", exc)
 
         first_dep: dict[str, int] = {}
         last_arr: dict[str, int] = {}
@@ -347,96 +482,44 @@ class GtfsResolver:
             for seq, stop_id, arr in sched
         ]
 
-    def scheduled_position(
-        self, trip_id: str, start_date: str, at: datetime
-    ) -> tuple[float, float] | None:
-        """(lat, lon) where the trip's schedule puts it at `at`.
+    def service_day_start(self, start_date: str) -> float:
+        """Epoch seconds of service midnight for `start_date` (YYYYMMDD)."""
+        d = date(int(start_date[:4]), int(start_date[4:6]), int(start_date[6:8]))
+        return self._service_midnight(d).timestamp()
 
-        Interpolated in a straight line between consecutive stops by scheduled
-        arrival, and clamped to the first or last stop outside the trip's window.
+    def trip_path(self, trip_id: str) -> TripPath | None:
+        """The trip's path with its stops placed along it; cached.
+
         None if the trip is unknown or a stop on it has no coordinates.
         """
-        points: list[tuple[int, tuple[float, float]]] = []
-        for _, stop_id, scheduled in self.trip_schedule(trip_id, start_date):
+        if trip_id in self._paths:
+            return self._paths[trip_id]
+        stops: list[tuple[int, tuple[float, float]]] = []
+        for _, stop_id, arrival in self._trip_schedule.get(trip_id, []):
             coords = self._stop_coords.get(stop_id)
             if coords is None:
-                return None
-            points.append((scheduled, coords))
-        if not points:
-            return None
-        t = at.timestamp()
-        if t <= points[0][0]:
-            return points[0][1]
-        for (t0, (lat0, lon0)), (t1, (lat1, lon1)) in itertools.pairwise(points):
-            if t <= t1:
-                f = (t - t0) / (t1 - t0) if t1 > t0 else 1.0
-                return lat0 + f * (lat1 - lat0), lon0 + f * (lon1 - lon0)
-        return points[-1][1]
+                stops = []
+                break
+            stops.append((arrival, coords))
+        path = None
+        if stops:
+            shape = self._shapes.get(self._trip_shapes.get(trip_id, ""))
+            path = _build_path(shape, stops)
+        self._paths[trip_id] = path
+        return path
 
-    def resolve_by_route(
-        self,
-        route_id: str,
-        now: datetime,
-        allowed_trips: set[str] | None = None,
-    ) -> tuple[str, str] | None:
-        """Resolve the trip on `route_id` whose scheduled window contains `now`.
-
-        For providers that report a route but not a trip (buswhere): among trips
-        on the route whose service is active, pick the one whose
-        [first_dep, last_arr] window contains `now`. Trips on these routes run
-        back-to-back, so at most one is running; at a shared boundary second we
-        prefer the just-starting trip (latest window_start). When no window
-        contains `now`, the bus is laying over or waiting to depart, so the trip
-        starting soonest within `_LAYOVER_LEAD` is used. Returns
-        (trip_id, start_date) or None when nothing is running or about to start.
-
-        `allowed_trips` narrows the candidates, for when several upstream routes
-        share one GTFS route_id and their windows overlap: without it they all
-        resolve to the same trip and collide downstream.
-        """
-        trip_ids = self._trips_by_route.get(route_id)
-        if not trip_ids:
-            return None
-        if allowed_trips is not None:
-            trip_ids = [t for t in trip_ids if t in allowed_trips]
-            if not trip_ids:
-                return None
-
+    def route_trips(self, route_id: str, now: datetime) -> list[tuple[str, str]]:
+        """(trip_id, start_date) for every trip on the route active today or
+        yesterday (a run can cross midnight), agency-local."""
         local_today = now.astimezone(self._tz).date()
-        best: tuple[datetime, str, str] | None = None  # (window_start, trip, sdate)
-        upcoming: tuple[datetime, str, str] | None = None
-        # A run can start the previous service day and cross midnight, so look
-        # back one day as well as today.
+        trips: list[tuple[str, str]] = []
         for lookback in range(2):
             d = local_today - timedelta(days=lookback)
-            service_midnight = self._service_midnight(d)
             start_date = d.strftime("%Y%m%d")
-            for trip_id in trip_ids:
-                service_id = self._trip_service.get(trip_id)
-                if service_id is None or not self._is_active(service_id, d):
-                    continue
-                first_dep, last_arr = self._windows.get(trip_id, (0, 0))
-                window_start = service_midnight + timedelta(seconds=first_dep)
-                window_end = service_midnight + timedelta(seconds=last_arr)
-                key = (window_start, trip_id, start_date)
-                if now < window_start <= now + _LAYOVER_LEAD:
-                    if upcoming is None or key < upcoming:
-                        upcoming = key
-                    continue
-                if not (window_start <= now <= window_end):
-                    continue
-                # Prefer the most recently started trip; break exact ties on the
-                # boundary second deterministically by trip_id.
-                if (
-                    best is None
-                    or key[0] > best[0]
-                    or (key[0] == best[0] and trip_id < best[1])
-                ):
-                    best = key
-        best = best or upcoming
-        if best is None:
-            return None
-        return best[1], best[2]
+            for trip_id in self._trips_by_route.get(route_id, []):
+                if self._is_active(self._trip_service.get(trip_id, ""), d):
+                    trips.append((trip_id, start_date))
+        return trips
 
     def resolve(
         self, train_num: str, now: datetime, origin: datetime | None = None

@@ -1,8 +1,11 @@
-"""resolve_by_route + BuswhereSource: route-window resolution and loop-aware
-stop-time construction against the Columbia County GTFS shape."""
+"""BuswhereSource: position-based trip assignment and loop-aware stop-time
+construction against the Columbia County GTFS shape."""
 
 import asyncio
-from datetime import UTC, datetime
+import gzip
+import json
+from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -12,11 +15,12 @@ from gtfs_zone_rt_pollers.config import Config
 from gtfs_zone_rt_pollers.gtfs import GtfsResolver
 from gtfs_zone_rt_pollers.sources.base import UpstreamError
 from gtfs_zone_rt_pollers.sources.buswhere import source as buswhere_source_mod
+from gtfs_zone_rt_pollers.sources.buswhere.assign import Fix, TripAssigner
 from gtfs_zone_rt_pollers.sources.buswhere.client import (
     BuswhereObservation,
     fetch_route,
 )
-from gtfs_zone_rt_pollers.sources.buswhere.source import BuswhereSource, _RouteMapping
+from gtfs_zone_rt_pollers.sources.buswhere.source import BuswhereSource
 
 TZ = ZoneInfo("America/New_York")
 
@@ -40,103 +44,6 @@ def _write(tmp_path, trips: str, stop_times: str, calendar_dates: str | None = N
     return GtfsResolver(tmp_path)
 
 
-# Two back-to-back trips on one route: 08:00-09:00 and 09:00-10:00.
-_TWO_TRIPS = (
-    "route_id,service_id,trip_id,trip_short_name,shape_id\n"
-    "R,WK,T1,loop,S\n"
-    "R,WK,T2,loop,S\n"
-)
-_TWO_TIMES = (
-    "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
-    "T1,08:00:00,08:00:00,A,0\n"
-    "T1,09:00:00,09:00:00,B,1\n"
-    "T2,09:00:00,09:00:00,A,0\n"
-    "T2,10:00:00,10:00:00,B,1\n"
-)
-
-
-def test_resolve_by_route_picks_running_trip(tmp_path):
-    r = _write(tmp_path, _TWO_TRIPS, _TWO_TIMES)
-    assert r.resolve_by_route("R", datetime(2024, 1, 2, 8, 30, tzinfo=TZ)) == (
-        "T1",
-        "20240102",
-    )
-    assert r.resolve_by_route("R", datetime(2024, 1, 2, 9, 30, tzinfo=TZ)) == (
-        "T2",
-        "20240102",
-    )
-
-
-def test_resolve_by_route_boundary_prefers_starting_trip(tmp_path):
-    # At the shared 09:00 boundary both windows contain now; prefer the trip
-    # just starting, not the one just ending.
-    r = _write(tmp_path, _TWO_TRIPS, _TWO_TIMES)
-    assert r.resolve_by_route("R", datetime(2024, 1, 2, 9, 0, tzinfo=TZ)) == (
-        "T2",
-        "20240102",
-    )
-
-
-def test_resolve_by_route_none_outside_service_hours(tmp_path):
-    r = _write(tmp_path, _TWO_TRIPS, _TWO_TIMES)
-    assert r.resolve_by_route("R", datetime(2024, 1, 2, 6, 0, tzinfo=TZ)) is None
-
-
-def test_resolve_by_route_honors_calendar_dates_removal(tmp_path):
-    # 2024-01-03 (Wed) is normally served, but a type-2 exception removes it.
-    r = _write(
-        tmp_path,
-        _TWO_TRIPS,
-        _TWO_TIMES,
-        calendar_dates="service_id,date,exception_type\nWK,20240103,2\n",
-    )
-    assert r.resolve_by_route("R", datetime(2024, 1, 3, 8, 30, tzinfo=TZ)) is None
-    assert r.resolve_by_route("R", datetime(2024, 1, 2, 8, 30, tzinfo=TZ)) is not None
-
-
-# An outbound 08:00-09:00 and a return 09:15-10:00 with a layover between them,
-# plus another route's trip so allowed_trips has something to exclude.
-_LAYOVER_TRIPS = (
-    "route_id,service_id,trip_id,trip_short_name,shape_id\n"
-    "R,WK,OUT,out,S\n"
-    "R,WK,BACK,back,S\n"
-    "R,WK,OTHER,other,S\n"
-)
-_LAYOVER_TIMES = (
-    "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
-    "OUT,08:00:00,08:00:00,A,0\n"
-    "OUT,09:00:00,09:00:00,B,1\n"
-    "BACK,09:15:00,09:15:00,B,0\n"
-    "BACK,10:00:00,10:00:00,A,1\n"
-    "OTHER,09:05:00,09:05:00,A,0\n"
-    "OTHER,09:30:00,09:30:00,B,1\n"
-)
-
-
-def test_resolve_by_route_layover_resolves_next_trip(tmp_path):
-    r = _write(tmp_path, _LAYOVER_TRIPS, _LAYOVER_TIMES)
-    allowed = {"OUT", "BACK"}
-    at = datetime(2024, 1, 2, 9, 3, tzinfo=TZ)
-    assert r.resolve_by_route("R", at, allowed) == ("BACK", "20240102")
-    # Without the narrowing the sooner OTHER wins.
-    assert r.resolve_by_route("R", at) == ("OTHER", "20240102")
-
-
-def test_resolve_by_route_running_trip_beats_upcoming(tmp_path):
-    r = _write(tmp_path, _LAYOVER_TRIPS, _LAYOVER_TIMES)
-    at = datetime(2024, 1, 2, 8, 58, tzinfo=TZ)
-    assert r.resolve_by_route("R", at, {"OUT", "BACK"}) == ("OUT", "20240102")
-
-
-def test_resolve_by_route_none_beyond_layover_lead(tmp_path):
-    r = _write(tmp_path, _LAYOVER_TRIPS, _LAYOVER_TIMES)
-    assert r.resolve_by_route("R", datetime(2024, 1, 2, 7, 39, tzinfo=TZ)) is None
-    assert r.resolve_by_route("R", datetime(2024, 1, 2, 7, 41, tzinfo=TZ)) == (
-        "OUT",
-        "20240102",
-    )
-
-
 # One 60-minute loop that returns to its origin stop A (seq 0 and seq 3).
 _LOOP_TRIP = "route_id,service_id,trip_id,trip_short_name,shape_id\nR,WK,LOOP,loop,S\n"
 _LOOP_TIMES = (
@@ -148,12 +55,21 @@ _LOOP_TIMES = (
 )
 
 
+_LOOP_STOPS = (
+    "stop_id,stop_name,stop_lat,stop_lon\n"
+    "A,A,42.25,-73.79\n"
+    "B,B,42.25,-73.70\n"
+    "C,C,42.30,-73.70\n"
+)
+
+
 def _buswhere_source(tmp_path, monkeypatch):
     monkeypatch.setenv("SOURCE", "buswhere")
     monkeypatch.setenv("INGEST_TRACKER_ID", "ccbus")
     src = BuswhereSource(Config())
-    src._resolver = _write(tmp_path, _LOOP_TRIP, _LOOP_TIMES)
-    src._routes = {"testslug": _RouteMapping("R")}
+    (tmp_path / "stops.txt").write_text(_LOOP_STOPS)
+    src._set_resolver(_write(tmp_path, _LOOP_TRIP, _LOOP_TIMES))
+    src._routes = {"testslug": "R"}
     src._stops = {"bwA": "A", "bwB": "B", "bwC": "C"}
     src._unmappable = set()
     return src
@@ -177,7 +93,7 @@ def test_buswhere_build_loop_keeps_upcoming_only(tmp_path, monkeypatch):
         },
     )
 
-    v = src._build("testslug", obs, now)
+    v = src._build("testslug", obs, "LOOP", "20240102")
     assert v is not None
     assert (v.trip_id, v.start_date, v.route_id) == ("LOOP", "20240102", "R")
     assert v.speed_mps is None and v.bearing is None
@@ -194,8 +110,8 @@ def test_buswhere_build_loop_keeps_upcoming_only(tmp_path, monkeypatch):
 
 
 def test_buswhere_build_labels_from_device_name(tmp_path, monkeypatch):
-    # The device name is display-only; device_id is what keeps two concurrent
-    # buses on one tracker apart.
+    # The device name is display-only; device_id identifies the bus whichever
+    # route it is logged into.
     src = _buswhere_source(tmp_path, monkeypatch)
     now = datetime(2024, 1, 2, 8, 25, tzinfo=TZ)
     obs = BuswhereObservation(
@@ -207,15 +123,15 @@ def test_buswhere_build_labels_from_device_name(tmp_path, monkeypatch):
         device_id=54742,
     )
 
-    v = src._build("testslug", obs, now)
+    v = src._build("testslug", obs, "LOOP", "20240102")
     assert v is not None
-    assert v.vehicle_id == "testslug:54742"
+    assert v.vehicle_id == "54742"
     assert v.vehicle_label == "C5"
 
     obs_unnamed = BuswhereObservation(
         lat=42.25, lon=-73.79, timestamp=int(now.timestamp()), stop_eta={"bwC": 900}
     )
-    v2 = src._build("testslug", obs_unnamed, now)
+    v2 = src._build("testslug", obs_unnamed, "LOOP", "20240102")
     assert v2 is not None
     assert v2.vehicle_label == "testslug"
     # No device: the bare slug, never None. rt-api keys its live record on the
@@ -236,7 +152,7 @@ def test_buswhere_build_current_stop_is_next_visit(tmp_path, monkeypatch):
         stop_eta={"bwC": 15 * 60 + 180, "bwA": 35 * 60, "bwB": 55 * 60},
     )
 
-    v = src._build("testslug", obs, now)
+    v = src._build("testslug", obs, "LOOP", "20240102")
     assert v is not None
     assert (v.current_stop_sequence, v.current_stop_id, v.current_status) == (
         2,
@@ -257,41 +173,12 @@ def test_buswhere_build_no_current_stop_without_predictions(tmp_path, monkeypatc
         stop_eta={"bwB": 55 * 60},
     )
 
-    v = src._build("testslug", obs, now)
+    v = src._build("testslug", obs, "LOOP", "20240102")
     assert v is not None
     assert v.stop_time_updates == []
     assert v.current_stop_sequence is None
     assert v.current_stop_id is None
     assert v.current_status is None
-
-
-def test_buswhere_build_unresolved_when_no_trip_running(tmp_path, monkeypatch):
-    src = _buswhere_source(tmp_path, monkeypatch)
-    now = datetime(2024, 1, 2, 6, 0, tzinfo=TZ)  # before service
-    obs = BuswhereObservation(
-        lat=42.25, lon=-73.79, timestamp=int(now.timestamp()), stop_eta={}
-    )
-    assert src._build("testslug", obs, now) is None
-
-
-def test_buswhere_build_unmapped_slug(tmp_path, monkeypatch):
-    src = _buswhere_source(tmp_path, monkeypatch)
-    now = datetime(2024, 1, 2, 8, 25, tzinfo=TZ)
-    obs = BuswhereObservation(
-        lat=42.25, lon=-73.79, timestamp=int(now.timestamp()), stop_eta={}
-    )
-    assert src._build("nope", obs, now) is None
-
-
-def test_now_from_utc_timestamp_resolves_local_day(tmp_path, monkeypatch):
-    # A device fix carried as a UTC epoch must resolve on the agency-local day.
-    src = _buswhere_source(tmp_path, monkeypatch)
-    now = datetime(2024, 1, 2, 8, 25, tzinfo=TZ).astimezone(UTC)
-    obs = BuswhereObservation(
-        lat=42.25, lon=-73.79, timestamp=int(now.timestamp()), stop_eta={"bwC": 900}
-    )
-    v = src._build("testslug", obs, now)
-    assert v is not None and v.start_date == "20240102"
 
 
 class _FakeResponse:
@@ -339,12 +226,13 @@ def test_fetch_route_tolerates_non_numeric_stop_eta():
 def test_fetch_failure_on_one_route_does_not_abort_cycle(tmp_path, monkeypatch, caplog):
     # A route whose fetch raises must be skipped, not kill the whole poll cycle.
     src = _buswhere_source(tmp_path, monkeypatch)
-    src._routes = {"bad": _RouteMapping("R"), "good": _RouteMapping("R")}
+    src._routes = {"bad": "R", "good": "R"}
     src._slugs = ["bad", "good"]
     now = datetime(2024, 1, 2, 8, 25, tzinfo=TZ)
+    src._clock = now.timestamp
     good_obs = BuswhereObservation(
-        lat=42.25,
-        lon=-73.79,
+        lat=42.2625,
+        lon=-73.70,
         timestamp=int(now.timestamp()),
         stop_eta={"bwC": 900},
     )
@@ -437,7 +325,6 @@ def test_fetch_route_returns_one_observation_per_device():
     assert observations[1].stop_eta == {"bwB": 6584.0, "bwC": 132.0}
     # The padded upstream name never reaches the VehicleDescriptor label.
     assert [o.vehicle_name for o in observations] == ["C1", "C12"]
-    assert all(o.route_current == (42.255656, -73.791474) for o in observations)
 
 
 def test_fetch_route_single_device_uses_aggregate_stop_eta():
@@ -461,63 +348,6 @@ def test_fetch_route_single_device_uses_aggregate_stop_eta():
     assert observations[0].stop_eta == {"bwB": 300.0}
 
 
-def test_attribute_drops_devices_running_another_route():
-    from gtfs_zone_rt_pollers.sources.buswhere.source import _attribute
-
-    shuttle_current = (42.255656, -73.791474)
-    albany_current = (42.677562, -73.810432)
-
-    def obs(device_id, lat, lon, current):
-        return BuswhereObservation(
-            lat=lat,
-            lon=lon,
-            timestamp=1700000000,
-            stop_eta={},
-            device_id=device_id,
-            route_current=current,
-        )
-
-    snapshots = {
-        "shuttle": [
-            obs(_C1, 42.677562, -73.810432, shuttle_current),
-            obs(_C12, *shuttle_current, shuttle_current),
-        ],
-        "albany": [obs(_C1, 42.677567, -73.81043, albany_current)],
-    }
-    owned = _attribute(snapshots)
-    # C1 is nearest to albany's `current`, so the shuttle's echo of it goes.
-    assert [o.device_id for o in owned["shuttle"]] == [_C12]
-    assert [o.device_id for o in owned["albany"]] == [_C1]
-
-
-def test_attribute_keeps_a_second_unclaimed_bus():
-    from gtfs_zone_rt_pollers.sources.buswhere.source import _attribute
-
-    current = (42.25, -73.79)
-    snapshots = {
-        "shuttle": [
-            BuswhereObservation(
-                lat=42.25,
-                lon=-73.79,
-                timestamp=1,
-                stop_eta={},
-                device_id=1,
-                route_current=current,
-            ),
-            BuswhereObservation(
-                lat=42.30,
-                lon=-73.70,
-                timestamp=1,
-                stop_eta={},
-                device_id=2,
-                route_current=current,
-            ),
-        ]
-    }
-    # Device 2 is not the owner, but no other route claims it either.
-    assert [o.device_id for o in _attribute(snapshots)["shuttle"]] == [1, 2]
-
-
 def test_unmappable_stops_do_not_warn(tmp_path, monkeypatch, caplog):
     src = _buswhere_source(tmp_path, monkeypatch)
     src._unmappable = {"bwGreenport"}
@@ -530,100 +360,306 @@ def test_unmappable_stops_do_not_warn(tmp_path, monkeypatch, caplog):
         stop_eta={"bwC": 900, "bwGreenport": 300, "bwUnknown": 300},
     )
 
-    src._build("testslug", obs, now, unmapped)
+    src._build("testslug", obs, "LOOP", "20240102", unmapped)
     assert unmapped == {"bwUnknown"}
 
 
-def test_attribute_prefers_the_closer_claim():
-    # A bus that just switched runs is briefly nearest to both snapshots'
-    # `current`; the route it left stops updating, so the tighter match wins
-    # regardless of poll order.
-    from gtfs_zone_rt_pollers.sources.buswhere.source import _attribute
-
-    bus = (42.251645, -73.789423)
-    stale = (42.256609, -73.79577)  # the route it left, a few fixes behind
-
-    def obs(current):
-        return BuswhereObservation(
-            lat=bus[0],
-            lon=bus[1],
-            timestamp=1,
-            stop_eta={},
-            device_id=_C12,
-            route_current=current,
-        )
-
-    # "left" is polled first here and last in the reversed case.
-    for snapshots in (
-        {"left": [obs(stale)], "joined": [obs(bus)]},
-        {"joined": [obs(bus)], "left": [obs(stale)]},
-    ):
-        owned = _attribute(snapshots)
-        assert [o.device_id for o in owned["joined"]] == [_C12]
-        assert owned["left"] == []
-
-
-_LOOP_STOPS = (
-    "stop_id,stop_name,stop_lat,stop_lon\n"
-    "A,A,42.25,-73.79\n"
-    "B,B,42.25,-73.70\n"
-    "C,C,42.30,-73.70\n"
-)
-
-
-def test_scheduled_position_interpolates_and_clamps(tmp_path):
+def test_trip_path_without_shape_joins_the_stops(tmp_path):
     (tmp_path / "stops.txt").write_text(_LOOP_STOPS)
     r = _write(tmp_path, _LOOP_TRIP, _LOOP_TIMES)
+    path = r.trip_path("LOOP")
+    assert path is not None
 
     def at(h, m):
-        return r.scheduled_position(
-            "LOOP", "20240102", datetime(2024, 1, 2, h, m, tzinfo=TZ)
-        )
+        return path.position(h * 3600 + m * 60)
 
     assert at(8, 10) == pytest.approx((42.25, -73.745))
     assert at(8, 50) == pytest.approx((42.275, -73.745))
     assert at(7, 0) == (42.25, -73.79)
-    assert at(10, 0) == (42.25, -73.79)
-    assert (
-        r.scheduled_position("NOPE", "20240102", datetime(2024, 1, 2, 8, tzinfo=TZ))
-        is None
+    assert at(10, 0) == pytest.approx((42.25, -73.79))
+    assert r.trip_path("NOPE") is None
+
+
+def test_trip_path_follows_the_shape(tmp_path):
+    # A trip from A to C whose shape runs via B: halfway in time is halfway
+    # along the shape (at B), not on the straight line A-C.
+    (tmp_path / "stops.txt").write_text(_LOOP_STOPS)
+    (tmp_path / "shapes.txt").write_text(
+        "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+        "S,42.25,-73.79,0\nS,42.25,-73.70,1\nS,42.30,-73.70,2\n"
     )
+    r = _write(
+        tmp_path,
+        "route_id,service_id,trip_id,trip_short_name,shape_id\nR,WK,AC,ac,S\n",
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
+        "AC,08:00:00,08:00:00,A,0\nAC,09:00:00,09:00:00,C,1\n",
+    )
+    path = r.trip_path("AC")
+    assert path is not None
+    ab = path.cum[1]
+    half = path.position(8.5 * 3600)
+    expected = path.point_at(path.cum[-1] / 2)
+    assert half == pytest.approx(expected)
+    # The halfway point lies on the A-B leg or the B-C leg, never off the shape.
+    assert half[0] == pytest.approx(42.25) or half[1] == pytest.approx(-73.70)
+    assert path.stops[0][1] == 0 and path.stops[-1][1] == pytest.approx(path.cum[-1])
+    assert ab > 0
 
 
-def _shared_trip_fetch(src, monkeypatch, observations):
+def test_trip_path_places_a_loop_terminus_at_the_end(tmp_path):
+    # The loop's origin and terminus are the same stop; the terminus must land
+    # at the end of the shape, not back at its start.
+    (tmp_path / "stops.txt").write_text(_LOOP_STOPS)
+    (tmp_path / "shapes.txt").write_text(
+        "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n"
+        "S,42.25,-73.79,0\nS,42.25,-73.70,1\nS,42.30,-73.70,2\nS,42.25,-73.79,3\n"
+    )
+    r = _write(tmp_path, _LOOP_TRIP, _LOOP_TIMES)
+    path = r.trip_path("LOOP")
+    assert path is not None
+    alongs = [a for _, a in path.stops]
+    assert alongs == sorted(alongs)
+    assert alongs[0] == 0
+    assert alongs[1] == pytest.approx(path.cum[1])
+    assert alongs[-1] == pytest.approx(path.cum[-1])
+
+
+# Route R runs OUT (A to B, 08:00-08:20) then BACK (B to A, 08:30-08:50) over
+# the same road; route R2 has its own trip elsewhere.
+_A, _B = (42.25, -73.79), (42.25, -73.70)
+_MID = (42.25, -73.745)
+_TOWARDS_B = (42.25, -73.7316)  # ~1.1 km from _MID towards B
+_TOWARDS_A = (42.25, -73.7584)  # ~1.1 km from _MID towards A
+_OUT_BACK_TRIPS = (
+    "route_id,service_id,trip_id,trip_short_name,shape_id\n"
+    "R,WK,OUT,out,\nR,WK,BACK,back,\nR2,WK,OTHER,other,\n"
+)
+_OUT_BACK_TIMES = (
+    "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
+    "OUT,08:00:00,08:00:00,A,0\nOUT,08:20:00,08:20:00,B,1\n"
+    "BACK,08:30:00,08:30:00,B,0\nBACK,08:50:00,08:50:00,A,1\n"
+    "OTHER,08:00:00,08:00:00,C,0\nOTHER,08:30:00,08:30:00,D,1\n"
+)
+_OUT_BACK_STOPS = (
+    "stop_id,stop_name,stop_lat,stop_lon\n"
+    "A,A,42.25,-73.79\nB,B,42.25,-73.70\nC,C,42.40,-73.79\nD,D,42.40,-73.70\n"
+)
+
+
+def _assigner(tmp_path):
+    (tmp_path / "stops.txt").write_text(_OUT_BACK_STOPS)
+    return TripAssigner(_write(tmp_path, _OUT_BACK_TRIPS, _OUT_BACK_TIMES))
+
+
+def _t(h, m, s=0):
+    return int(datetime(2024, 1, 2, h, m, s, tzinfo=TZ).timestamp())
+
+
+def _fix(key, pos, ts, routes=("R",)):
+    return Fix(key, pos[0], pos[1], ts, frozenset(routes))
+
+
+def _trip(chosen, key):
+    entry = chosen.get(key)
+    return entry[0] if entry else None
+
+
+def test_assign_picks_the_trip_by_position_not_the_slug(tmp_path):
+    # Listed by both routes' snapshots (a wrong-route login or an echo), the bus
+    # goes to the trip where it actually is.
+    a = _assigner(tmp_path)
+    chosen = a.assign([_fix("1", _MID, _t(8, 10), ("R", "R2"))], _t(8, 10))
+    assert chosen == {"1": ("OUT", "20240102", "R")}
+
+
+def test_assign_direction_decides_between_opposite_trips(tmp_path):
+    # At 08:25 a bus at the midpoint is 15 minutes off both OUT and BACK; the
+    # fix three minutes earlier says which way it is going.
+    for earlier, expected in ((_TOWARDS_B, "BACK"), (_TOWARDS_A, "OUT")):
+        a = _assigner(tmp_path)
+        a.assign([_fix("1", earlier, _t(8, 22))], _t(8, 22))
+        chosen = a.assign([_fix("1", _MID, _t(8, 25))], _t(8, 25))
+        assert _trip(chosen, "1") == expected
+
+
+def test_assign_one_device_per_trip(tmp_path):
+    a = _assigner(tmp_path)
+    off = (42.2535, -73.745)  # ~390 m off the road
+    chosen = a.assign(
+        [_fix("1", off, _t(8, 10)), _fix("2", _MID, _t(8, 10))], _t(8, 10)
+    )
+    assert chosen == {"2": ("OUT", "20240102", "R")}
+
+
+def test_assign_parked_bus_only_waits_to_start(tmp_path):
+    # Parked at A from 07:50: at 07:58 it is waiting for OUT, but a bus first
+    # seen parked there at 08:06 is not running OUT six minutes late.
+    a = _assigner(tmp_path)
+    for m in range(50, 58):
+        a.assign([_fix("1", _A, _t(7, m))], _t(7, m))
+    assert _trip(a.assign([_fix("1", _A, _t(7, 58))], _t(7, 58)), "1") == "OUT"
+
+    # History without candidates: parked at A from 07:56, on no route yet.
+    b = _assigner(tmp_path)
+    for m in range(56, 66):
+        ts = _t(7, 0) + m * 60
+        b.assign([_fix("2", _A, ts, routes=())], ts)
+    assert b.assign([_fix("2", _A, _t(8, 6))], _t(8, 6)) == {}
+
+    # A bus pulling in to A (from ~300 m away) at 08:06 does take OUT.
+    c = _assigner(tmp_path)
+    c.assign([_fix("3", (42.2527, -73.79), _t(8, 4))], _t(8, 4))
+    assert _trip(c.assign([_fix("3", _A, _t(8, 6))], _t(8, 6)), "3") == "OUT"
+
+
+def test_assign_does_not_reassign_a_finished_trip(tmp_path):
+    # Bus 1 runs OUT to the end and drops out; bus 2, heading for B at 08:26,
+    # fits OUT 16 minutes late but OUT has been run.
+    a = _assigner(tmp_path)
+    for m in range(0, 21, 2):
+        lon = _A[1] + (_B[1] - _A[1]) * m / 20
+        a.assign([_fix("1", (42.25, lon), _t(8, m))], _t(8, m))
+    a.assign([], _t(8, 22))
+    a.assign([_fix("2", _TOWARDS_A, _t(8, 23))], _t(8, 23))
+    assert a.assign([_fix("2", _MID, _t(8, 26))], _t(8, 26)) == {}
+
+
+def test_assign_skips_stale_fixes(tmp_path):
+    a = _assigner(tmp_path)
+    assert a.assign([_fix("1", _MID, _t(8, 10))], _t(8, 14)) == {}
+
+
+def test_assign_start_date_is_the_local_service_day(tmp_path):
+    # A fix as a UTC epoch late in the local evening stays on the local day.
+    (tmp_path / "stops.txt").write_text(_OUT_BACK_STOPS)
+    r = _write(
+        tmp_path,
+        "route_id,service_id,trip_id,trip_short_name,shape_id\nR,WK,LATE,late,\n",
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
+        "LATE,22:00:00,22:00:00,A,0\nLATE,22:20:00,22:20:00,B,1\n",
+    )
+    ts = _t(22, 10)  # 03:10 UTC on 01-03
+    chosen = TripAssigner(r).assign([_fix("1", _MID, ts)], ts)
+    assert chosen == {"1": ("LATE", "20240102", "R")}
+
+
+def _source_fetch(src, monkeypatch, snapshots):
     async def fake_fetch_route(http, slug, base_url=None):
-        return observations
+        return snapshots.get(slug, [])
 
-    src._slugs = ["testslug"]
     monkeypatch.setattr(buswhere_source_mod, "fetch_route", fake_fetch_route)
     return asyncio.run(src.fetch(None))
 
 
-def test_fetch_keeps_one_device_per_trip_by_schedule_fit(tmp_path, monkeypatch):
-    # Both devices resolve to LOOP at 08:25; only the one whose ETA to C matches
-    # the 08:40 schedule is publishing it.
+def test_fetch_one_vehicle_per_device_across_slugs(tmp_path, monkeypatch):
+    # The same bus in two snapshots is one vehicle, published from its newest
+    # fix under its device id.
     src = _buswhere_source(tmp_path, monkeypatch)
-    ts = int(datetime(2024, 1, 2, 8, 25, tzinfo=TZ).timestamp())
-    late = BuswhereObservation(
-        lat=42.26, lon=-73.70, timestamp=ts, stop_eta={"bwC": 40 * 60}, device_id=1
-    )
-    on_time = BuswhereObservation(
-        lat=42.27, lon=-73.70, timestamp=ts, stop_eta={"bwC": 15 * 60}, device_id=2
-    )
-    updates = _shared_trip_fetch(src, monkeypatch, [late, on_time])
-    assert [u.vehicle_id for u in updates] == ["testslug:2"]
+    src._routes = {"am": "R", "pm": "R"}
+    src._slugs = ["am", "pm"]
+    ts = _t(8, 25)
+    src._clock = lambda: ts
+
+    def obs(t):
+        return BuswhereObservation(
+            lat=42.2625, lon=-73.70, timestamp=t, stop_eta={}, device_id=7
+        )
+
+    updates = _source_fetch(src, monkeypatch, {"am": [obs(ts - 30)], "pm": [obs(ts)]})
+    assert [(u.vehicle_id, u.trip_id, u.timestamp) for u in updates] == [
+        ("7", "LOOP", ts)
+    ]
 
 
-def test_fetch_rules_out_devices_far_from_the_scheduled_position(tmp_path, monkeypatch):
-    # A bus in Albany whose ETAs happen to fit loses to the one on the loop.
-    (tmp_path / "stops.txt").write_text(_LOOP_STOPS)
+def test_fetch_never_publishes_an_older_fix(tmp_path, monkeypatch):
     src = _buswhere_source(tmp_path, monkeypatch)
-    ts = int(datetime(2024, 1, 2, 8, 25, tzinfo=TZ).timestamp())
-    on_loop = BuswhereObservation(
-        lat=42.26, lon=-73.70, timestamp=ts, stop_eta={"bwC": 40 * 60}, device_id=1
-    )
-    in_albany = BuswhereObservation(
-        lat=42.65, lon=-73.76, timestamp=ts, stop_eta={"bwC": 15 * 60}, device_id=2
-    )
-    updates = _shared_trip_fetch(src, monkeypatch, [in_albany, on_loop])
-    assert [u.vehicle_id for u in updates] == ["testslug:1"]
+    src._slugs = ["testslug"]
+    ts = _t(8, 25)
+    src._clock = lambda: ts
+
+    def obs(t):
+        return BuswhereObservation(
+            lat=42.2625, lon=-73.70, timestamp=t, stop_eta={}, device_id=7
+        )
+
+    assert len(_source_fetch(src, monkeypatch, {"testslug": [obs(ts)]})) == 1
+    assert _source_fetch(src, monkeypatch, {"testslug": [obs(ts - 60)]}) == []
+    assert len(_source_fetch(src, monkeypatch, {"testslug": [obs(ts)]})) == 1
+
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _replay(monkeypatch, name):
+    """Run recorded 2026-11-24 snapshots through the source.
+
+    Returns {poll: {vehicle_id: trip_id}} and the published updates.
+    """
+    monkeypatch.setenv("SOURCE", "buswhere")
+    monkeypatch.setenv("INGEST_TRACKER_ID", "ccbus")
+    src = BuswhereSource(Config())
+    src._set_resolver(GtfsResolver(_FIXTURES / "columbia_county_gtfs.zip"))
+    polls: dict[int, dict[str, dict]] = {}
+    with gzip.open(_FIXTURES / f"buswhere_20261124_{name}.jsonl.gz", "rt") as f:
+        for line in f:
+            row = json.loads(line)
+            polls.setdefault(row["poll"], {})[row["slug"]] = row["body"]
+
+    current: dict[str, dict] = {}
+
+    def handler(request):
+        body = current.get(request.url.path.rsplit("/", 1)[-1])
+        if body is None:
+            return httpx.Response(302, headers={"location": "/"})
+        return httpx.Response(200, json=body)
+
+    async def run():
+        out: dict[int, dict[str, str]] = {}
+        published = []
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            for poll in sorted(polls):
+                current.clear()
+                current.update(polls[poll])
+                src._clock = lambda poll=poll: poll
+                updates = await src.fetch(http)
+                out[poll] = {u.vehicle_id: u.trip_id for u in updates}
+                published.extend(updates)
+        return out, published
+
+    return asyncio.run(run())
+
+
+def _at(out, h, m):
+    """The assignments of the last poll at or before h:m on 2026-11-24."""
+    t = datetime(2026, 11, 24, h, m, tzinfo=TZ).timestamp()
+    return out[max(p for p in out if p <= t)]
+
+
+def _check_invariants(out, published):
+    for trips in out.values():
+        assert len(set(trips.values())) == len(trips), "a trip on two buses"
+    last: dict[str, int] = {}
+    for u in published:
+        assert ":" not in u.vehicle_id
+        assert u.timestamp >= last.get(u.vehicle_id, 0)
+        last[u.vehicle_id] = u.timestamp
+
+
+def test_replay_morning_wrong_slug_logins(monkeypatch):
+    # C7 (55234) ran the C AM commute logged into the A AM slug; C13 (55168),
+    # on the shopping shuttle, showed up in the C AM snapshot.
+    out, published = _replay(monkeypatch, "morning")
+    _check_invariants(out, published)
+    at_0730 = _at(out, 7, 30)
+    assert at_0730.get("55234") == "HUD_ALB_C_AM_NB"
+    assert at_0730.get("55168", "").startswith("SHOPPING_WK_")
+    assert _at(out, 8, 0).get("55170") == "HUD_ALB_A_AM_SB"
+
+
+def test_replay_afternoon_parked_bus_and_handover(monkeypatch):
+    # C7 sat at the depot through the 15:07 shuttle; C13 handed B PM to C1.
+    out, published = _replay(monkeypatch, "afternoon")
+    _check_invariants(out, published)
+    assert _at(out, 15, 0).get("55168") == "HUD_ALB_B_PM_NB"
+    assert "55234" not in _at(out, 15, 30)
+    assert _at(out, 15, 45).get("55170") == "HUD_ALB_B_PM_NB"

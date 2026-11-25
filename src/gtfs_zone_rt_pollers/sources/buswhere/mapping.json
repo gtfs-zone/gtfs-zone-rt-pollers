@@ -1,35 +1,11 @@
 {
   "routes": {
     "shopping_shuttle": "Shopping",
-    "hudson__albany_c__am": {
-      "route_id": "Albany-Commuter",
-      "trips": [
-        "HUD_ALB_C_AM_NB",
-        "HUD_ALB_C_AM_SB"
-      ]
-    },
-    "hudson__albany_b_pm": {
-      "route_id": "Albany-Commuter",
-      "trips": [
-        "HUD_ALB_B_PM_NB",
-        "HUD_ALB_B_PM_SB"
-      ]
-    },
+    "hudson__albany_c__am": "Albany-Commuter",
+    "hudson__albany_b_pm": "Albany-Commuter",
     "chatham": "Chatham-Hudson",
-    "hudson__albany_d_pm": {
-      "route_id": "Albany-Commuter",
-      "trips": [
-        "HUD_ALB_D_PM_NB",
-        "HUD_ALB_D_PM_SB"
-      ]
-    },
-    "hudson__albany_a_am": {
-      "route_id": "Albany-Commuter",
-      "trips": [
-        "HUD_ALB_A_AM_NB",
-        "HUD_ALB_A_AM_SB"
-      ]
-    },
+    "hudson__albany_d_pm": "Albany-Commuter",
+    "hudson__albany_a_am": "Albany-Commuter",
     "shopping_shuttle_sat": "Shopping",
     "philmont": "Philmont",
     "copake_": "Ancramdale"

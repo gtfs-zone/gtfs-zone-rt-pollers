@@ -7,10 +7,8 @@ any inactive/suspended/vehicle-less route, as "nothing running".
 
 A snapshot's `devices` list is not confined to the route asked for: buses running
 other routes are echoed into it. So this module returns one observation *per
-device* and leaves attribution to the source, which sees the whole cycle. Two
-fields make that possible: `device_id`, the only stable discriminator across
-routes, and `route_current` (the snapshot's `current`), which tracks the route's
-own bus.
+device*, keyed by `device_id` (stable across routes), and leaves trip assignment
+to the source, which sees the whole cycle.
 
 ETAs are likewise per device. The top-level `stop_eta` is an aggregate over every
 device in the snapshot, so on a multi-device snapshot it blends buses; the
@@ -40,8 +38,8 @@ _HEADERS = {
 class BuswhereObservation:
     """One device seen in a buswhere route snapshot.
 
-    Seen in it, not necessarily running it: the caller decides which snapshot
-    owns this device (see `route_current`).
+    Seen in it, not necessarily running it: the caller decides which trip the
+    device is on.
     """
 
     lat: float
@@ -54,10 +52,6 @@ class BuswhereObservation:
     # buswhere's internal device id; the discriminator when one device is
     # echoed into several routes' snapshots.
     device_id: int | None = None
-    # The snapshot's `current` position, which tracks the bus actually running
-    # this route (a fix or so stale). Same value on every observation from one
-    # snapshot.
-    route_current: tuple[float, float] | None = None
 
 
 def _numeric_etas(raw: dict[str, object] | None) -> dict[str, float]:
@@ -119,11 +113,6 @@ async def fetch_route(
         return []
 
     current = data.get("current") or {}
-    route_current = (
-        (float(current["lat"]), float(current["lon"]))
-        if current.get("lat") is not None and current.get("lon") is not None
-        else None
-    )
     other = data.get("other_routes_stop_eta")
     # The aggregate is only unambiguous when it describes a single bus, and it
     # is the sole source when the per-device breakdown is missing.
@@ -153,7 +142,6 @@ async def fetch_route(
                 # the GTFS-RT VehicleDescriptor.label verbatim.
                 vehicle_name=name.strip() if isinstance(name, str) else name,
                 device_id=device_id,
-                route_current=route_current,
             )
         )
     return observations

@@ -63,9 +63,8 @@ BUSWHERE_BASE = "https://buswhere.com/columbiacountyny/routes"
 #
 # buswhere splits the Albany commuter into one slug per run, while the GTFS has a
 # single Albany-Commuter route with eight weekday trips (A_AM 06:15, C_AM 07:00,
-# B_PM 14:30, D_PM 16:00, each NB/SB). route_id alone is not enough there: the
-# runs' windows overlap (B_PM_NB ends 16:20, D_PM_NB starts 16:00), so two slugs
-# would resolve to the same trip. ROUTE_TRIPS pins each slug to its own runs.
+# B_PM 14:30, D_PM 16:00, each NB/SB). All four slugs map to that route; the
+# source picks the trip from the bus's position.
 # The separator isn't consistent across runs: confirmed C_AM uses a double
 # underscore before "am", but confirmed A_AM uses a single one. Don't assume
 # a pattern from one run's spelling when guessing another's.
@@ -90,28 +89,6 @@ CANDIDATE_ROUTES: dict[str, str] = {
 }
 
 ALL_ROUTES: dict[str, str] = {**ROUTES, **CANDIDATE_ROUTES}
-
-# Slugs that need a trip allowlist because they share a route_id with a slug
-# whose scheduled window overlaps theirs. Written into mapping.json as
-# {"route_id": ..., "trips": [...]}; slugs absent here stay bare strings.
-ROUTE_TRIPS: dict[str, list[str]] = {
-    "hudson__albany_a_am": ["HUD_ALB_A_AM_NB", "HUD_ALB_A_AM_SB"],
-    "hudson__albany_c__am": ["HUD_ALB_C_AM_NB", "HUD_ALB_C_AM_SB"],
-    "hudson__albany_b_pm": ["HUD_ALB_B_PM_NB", "HUD_ALB_B_PM_SB"],
-    "hudson__albany_d_pm": ["HUD_ALB_D_PM_NB", "HUD_ALB_D_PM_SB"],
-}
-
-
-def _route_entry(slug: str) -> str | dict:
-    """A mapping.json routes value: bare route_id, or route_id + trip allowlist."""
-    route_id = ALL_ROUTES[slug]
-    trips = ROUTE_TRIPS.get(slug)
-    return {"route_id": route_id, "trips": trips} if trips else route_id
-
-
-def _route_id_of(entry: str | dict) -> str:
-    """The route_id from either mapping.json routes form."""
-    return entry if isinstance(entry, str) else entry["route_id"]
 
 
 MAPPING_PATH = (
@@ -291,7 +268,7 @@ def _fetch_route_stops(client: httpx.Client, slug: str) -> list[dict] | None:
 def _load_mapping() -> dict[str, dict]:
     """The committed mapping, or an empty one. Only confirmed routes are seeded."""
     mapping: dict[str, dict] = {
-        "routes": {slug: _route_entry(slug) for slug in ROUTES},
+        "routes": dict(ROUTES),
         "stops": {},
     }
     if MAPPING_PATH.exists():
@@ -615,7 +592,7 @@ def _map_route(
 
     # A candidate slug that actually served stops is a real route: record it so
     # the runtime source starts polling it too.
-    mapping["routes"].setdefault(slug, _route_entry(slug))
+    mapping["routes"].setdefault(slug, ALL_ROUTES[slug])
     return matched
 
 
@@ -628,7 +605,7 @@ def _coverage_report(
     buswhere counterpart, restricted to routes we've actually captured."""
     mapped_gtfs_stops = set(mapping["stops"].values())
     gaps: dict[str, list[tuple[str, str]]] = {}
-    route_ids = {_route_id_of(e) for e in mapping["routes"].values()}
+    route_ids = set(mapping["routes"].values())
     for route_id in sorted(route_ids):
         scheduled = gtfs_route_stops.get(route_id, set())
         missing = scheduled - mapped_gtfs_stops

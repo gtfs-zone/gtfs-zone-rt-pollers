@@ -13,6 +13,7 @@ dist/
 
 # Local GTFS feeds/extracts pulled for inspection: fetch them, don't commit them.
 *.zip
+!tests/fixtures/*.zip
 gtfs-ex/
 *-gtfs-ex/
 

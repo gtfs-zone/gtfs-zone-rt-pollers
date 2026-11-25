@@ -20,10 +20,10 @@ in [README.md](README.md).
 
 - **amtrak** decrypts Amtrak's getTrainsData feed and resolves by train number
   (`GtfsResolver.resolve()`).
-- **buswhere** polls Columbia County (NY) and resolves by route and scheduled
-  window (`resolve_by_route()`), mapping stop IDs through
-  `sources/buswhere/mapping.json`. The map's keys and the device attribution
-  rules are in [docs/buswhere.md](docs/buswhere.md).
+- **buswhere** polls Columbia County (NY) and assigns each bus to a trip by
+  position along the GTFS shapes (`sources/buswhere/assign.py`), mapping stop
+  IDs through `sources/buswhere/mapping.json`. The map's keys and the
+  assignment rules are in [docs/buswhere.md](docs/buswhere.md).
 - **hudsonlink** polls CoachUSA's journey API and resolves by ordered stops and
   first departure (`resolve_by_pattern()`). Endpoints and quirks are in
   [docs/hudsonlink.md](docs/hudsonlink.md).

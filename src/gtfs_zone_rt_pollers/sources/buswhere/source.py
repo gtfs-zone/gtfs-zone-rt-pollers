@@ -1,23 +1,20 @@
 """buswhere (Columbia County) source.
 
 buswhere reports a route and per-stop ETAs but no trip_id, so this source
-resolves the trip itself against the Columbia County GTFS (`resolve_by_route`)
-and rewrites buswhere's internal stop IDs to GTFS stop IDs via the committed
-mapping. It never trusts a device-supplied trip.
+resolves the trip itself against the Columbia County GTFS and rewrites
+buswhere's internal stop IDs to GTFS stop IDs via the committed mapping. It
+never trusts a device-supplied trip.
 
-A route's snapshot also lists buses running *other* routes, so each cycle first
-attributes devices to routes (`_attribute`) and only then builds updates. Devices
-that still resolve to the same trip are cut down to one (`_one_per_trip`).
+A route's snapshot also lists buses running other routes, and drivers log into
+the wrong route, so the snapshot only narrows which routes a bus may be on.
+Each device's newest fix is matched to a trip by position (`TripAssigner`).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import math
-import statistics
-from dataclasses import dataclass
-from datetime import UTC, datetime
+import time
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,6 +27,7 @@ from gtfs_zone_rt_pollers.sources.base import (
     VehicleUpdate,
 )
 
+from .assign import Fix, TripAssigner
 from .client import BuswhereObservation, fetch_route
 
 if TYPE_CHECKING:
@@ -47,106 +45,18 @@ log = logging.getLogger(__name__)
 # terminus) to the correct occurrence.
 _MAX_SCHEDULE_SKEW = 1800  # seconds
 
-# When several devices resolve to one trip, a device this much further from
-# the trip's scheduled position than the nearest one is not running it (a bus
-# echoed from another route, or parked).
-_TRIP_POSITION_MARGIN = 5000  # metres
-# A stop prediction within this of the schedule counts towards a device's fit.
-_TRIP_FIT_DELAY = 600  # seconds
 
-
-@dataclass(frozen=True)
-class _RouteMapping:
-    """A buswhere slug's GTFS route, and optionally which of its trips to use."""
-
-    route_id: str
-    # Set when several slugs share one route_id and their scheduled windows
-    # overlap; None means "any trip on the route".
-    allowed_trips: frozenset[str] | None = None
-
-
-def _load_mapping() -> tuple[dict[str, _RouteMapping], dict[str, str], set[str]]:
-    """(routes, stops: buswhere_stop_id->gtfs_stop_id, reviewed-as-unmappable)."""
+def _load_mapping() -> tuple[dict[str, str], dict[str, str], set[str]]:
+    """(routes: slug->route_id, stops: buswhere->GTFS stop_id, unmappable)."""
     raw = json.loads(
         resources.files(__package__).joinpath("mapping.json").read_text("utf-8")
     )
-    routes: dict[str, _RouteMapping] = {}
-    for slug, entry in raw.get("routes", {}).items():
-        # A bare string is the common case: one slug, one route, no ambiguity.
-        if isinstance(entry, str):
-            routes[slug] = _RouteMapping(entry)
-        else:
-            trips = entry.get("trips")
-            routes[slug] = _RouteMapping(
-                entry["route_id"], frozenset(trips) if trips else None
-            )
-    return routes, raw.get("stops", {}), set(raw.get("unmapped", []))
+    return raw.get("routes", {}), raw.get("stops", {}), set(raw.get("unmapped", []))
 
 
-def _distance_sq(a: tuple[float, float], b: tuple[float, float]) -> float:
-    """Squared degree distance. Only ever compared, never reported."""
-    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
-
-
-def _distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
-    """Equirectangular distance in metres, accurate at a county's scale."""
-    lat = math.radians((a[0] + b[0]) / 2)
-    dx = math.radians(b[1] - a[1]) * math.cos(lat)
-    dy = math.radians(b[0] - a[0])
-    return 6_371_000 * math.hypot(dx, dy)
-
-
-def _schedule_fit(update: VehicleUpdate) -> tuple[int, float]:
-    """How well a device's predictions match its trip; higher is better.
-
-    The count of stops predicted within `_TRIP_FIT_DELAY` of schedule, then the
-    smaller median delay. A device with no predictions ranks last.
-    """
-    delays = [abs(u.arrival_delay or 0) for u in update.stop_time_updates]
-    if not delays:
-        return 0, -math.inf
-    close = sum(d <= _TRIP_FIT_DELAY for d in delays)
-    return close, -statistics.median(delays)
-
-
-def _attribute(
-    snapshots: dict[str, list[BuswhereObservation]],
-) -> dict[str, list[BuswhereObservation]]:
-    """Assign each device to the route it is actually running.
-
-    A snapshot's `current` tracks the bus running that route, so the device
-    nearest it owns the route. An owned device is dropped from every other
-    snapshot, which is what removes the echoes. Devices no route claims are left
-    where they were found, so a route genuinely running a second bus keeps it.
-
-    A bus that has just switched runs is briefly the nearest device to both
-    snapshots' `current`, the route it left having stopped updating. The tighter
-    match is the route it is on now, so the claims are compared by distance
-    rather than resolved by whichever route was polled last.
-    """
-    # device_id -> (distance to the claiming route's `current`, slug)
-    claims: dict[int, tuple[float, str]] = {}
-    for slug, observations in snapshots.items():
-        current = next((o.route_current for o in observations if o.route_current), None)
-        if current is None:
-            continue
-        owner = min(observations, key=lambda o: _distance_sq((o.lat, o.lon), current))
-        if owner.device_id is None:
-            continue
-        claim = (_distance_sq((owner.lat, owner.lon), current), slug)
-        existing = claims.get(owner.device_id)
-        if existing is None or claim < existing:
-            claims[owner.device_id] = claim
-    owners = {device_id: slug for device_id, (_, slug) in claims.items()}
-
-    return {
-        slug: [
-            o
-            for o in observations
-            if o.device_id is None or owners.get(o.device_id, slug) == slug
-        ]
-        for slug, observations in snapshots.items()
-    }
+def _device_key(slug: str, obs: BuswhereObservation) -> str:
+    """The device id, or the slug for an observation without one."""
+    return str(obs.device_id) if obs.device_id is not None else slug
 
 
 class BuswhereSource(Source):
@@ -155,79 +65,35 @@ class BuswhereSource(Source):
     def __init__(self, config: Config) -> None:
         self._config = config
         self._resolver: GtfsResolver | None = None
+        self._assigner: TripAssigner | None = None
         self._routes, self._stops, self._unmappable = _load_mapping()
         # Poll the configured slugs, or every slug we have a route mapping for.
         self._slugs = config.buswhere_routes or list(self._routes)
+        self._clock = time.time
+        # device key -> newest fix timestamp published.
+        self._last_sent: dict[str, int] = {}
 
     async def startup(self, http: httpx.AsyncClient) -> None:
         gtfs_path = await fetch_gtfs(
             self._config.gtfs_url, Path(self._config.gtfs_path), http
         )
-        self._resolver = GtfsResolver(gtfs_path)
+        self._set_resolver(GtfsResolver(gtfs_path))
 
-    def _one_per_trip(self, updates: list[VehicleUpdate]) -> list[VehicleUpdate]:
-        """Keep one device per trip instance, dropping the rest.
-
-        The trips on a route run one bus at a time, so a second device on the
-        same trip is a bus parked at the garage, echoed from another route, or
-        swapping in. Devices far from where the schedule puts the trip are ruled
-        out first, since buswhere's ETAs can fit the wrong bus; the device whose
-        ETAs best fit the schedule then wins.
-        """
-        resolver = self._resolver
-        assert resolver is not None
-        by_trip: dict[tuple[str, str | None], list[VehicleUpdate]] = {}
-        for u in updates:
-            by_trip.setdefault((u.trip_id, u.start_date), []).append(u)
-
-        kept: list[VehicleUpdate] = []
-        for (trip_id, start_date), sharing in by_trip.items():
-            candidates = sharing
-            if len(sharing) > 1 and start_date is not None:
-                distances: dict[str, float] = {}
-                for u in sharing:
-                    at = datetime.fromtimestamp(u.timestamp, tz=UTC)
-                    pos = resolver.scheduled_position(trip_id, start_date, at)
-                    if pos is not None:
-                        distances[u.vehicle_id] = _distance_m((u.lat, u.lon), pos)
-                if len(distances) == len(sharing):
-                    limit = min(distances.values()) + _TRIP_POSITION_MARGIN
-                    candidates = [
-                        u for u in sharing if distances[u.vehicle_id] <= limit
-                    ]
-            if len(sharing) > 1:
-                # Sorted first so a tie goes to the same device every cycle.
-                winner = max(
-                    sorted(candidates, key=lambda u: u.vehicle_id), key=_schedule_fit
-                )
-                log.debug(
-                    "buswhere: %s kept %s, dropped %d other device(s)",
-                    trip_id,
-                    winner.vehicle_id,
-                    len(sharing) - 1,
-                )
-                candidates = [winner]
-            kept.extend(candidates)
-        return kept
+    def _set_resolver(self, resolver: GtfsResolver) -> None:
+        self._resolver = resolver
+        self._assigner = TripAssigner(resolver)
 
     def _build(
         self,
         slug: str,
         obs: BuswhereObservation,
-        now: datetime,
+        trip_id: str,
+        start_date: str,
         unmapped_stops: set[str] | None = None,
-    ) -> VehicleUpdate | None:
+    ) -> VehicleUpdate:
         resolver = self._resolver
         assert resolver is not None
-        mapping = self._routes.get(slug)
-        if mapping is None:
-            log.warning("no route mapping for buswhere slug %s", slug)
-            return None
-        route_id = mapping.route_id
-        resolved = resolver.resolve_by_route(route_id, now, mapping.allowed_trips)
-        if resolved is None:
-            return None
-        trip_id, start_date = resolved
+        route_id = resolver.route_for(trip_id) or self._routes.get(slug)
 
         # buswhere ETA keyed by GTFS stop (min ETA if two buswhere stops collapse
         # onto one GTFS stop).
@@ -270,14 +136,9 @@ class BuswhereSource(Source):
 
         return VehicleUpdate(
             tracker_id=self._config.tracker_id,
-            # buswhere's device_id is stable within a snapshot, which is all
-            # rt-api needs to keep concurrent buses on one tracker apart. An
-            # observation with no device falls back to the bare slug: `_attribute`
-            # leaves at most one unattributed bus per route, so the slug alone
-            # identifies it.
-            vehicle_id=(
-                f"{slug}:{obs.device_id}" if obs.device_id is not None else slug
-            ),
+            # buswhere's device_id is the bus, whichever route it is logged
+            # into.
+            vehicle_id=_device_key(slug, obs),
             vehicle_label=obs.vehicle_name or slug,
             trip_id=trip_id,
             start_date=start_date,
@@ -297,7 +158,7 @@ class BuswhereSource(Source):
         )
 
     async def fetch(self, http: httpx.AsyncClient) -> list[VehicleUpdate]:
-        assert self._resolver is not None, "startup() must run before fetch()"
+        assert self._assigner is not None, "startup() must run before fetch()"
 
         snapshots: dict[str, list[BuswhereObservation]] = {}
         last_error: Exception | None = None
@@ -314,39 +175,53 @@ class BuswhereSource(Source):
                 f"all {len(self._slugs)} buswhere routes failed: {last_error!r}"
             )
 
-        owned = _attribute(snapshots)
+        # One entry per device: its newest fix (richest ETAs on a tie) and every
+        # slug listing it.
+        devices: dict[str, tuple[str, BuswhereObservation, set[str]]] = {}
+        for slug, observations in snapshots.items():
+            if slug not in self._routes:
+                log.warning("no route mapping for buswhere slug %s", slug)
+                continue
+            for obs in observations:
+                key = _device_key(slug, obs)
+                entry = devices.get(key)
+                if entry is None:
+                    devices[key] = (slug, obs, {slug})
+                    continue
+                entry[2].add(slug)
+                best = entry[1]
+                if (obs.timestamp, len(obs.stop_eta)) > (
+                    best.timestamp,
+                    len(best.stop_eta),
+                ):
+                    devices[key] = (slug, obs, entry[2])
+
+        fixes = [
+            Fix(
+                key=key,
+                lat=obs.lat,
+                lon=obs.lon,
+                timestamp=obs.timestamp,
+                route_ids=frozenset(self._routes[s] for s in slugs),
+            )
+            for key, (_, obs, slugs) in devices.items()
+            # A fix older than one already published would move the bus back.
+            if obs.timestamp >= self._last_sent.get(key, 0)
+        ]
+        chosen = self._assigner.assign(fixes, self._clock())
 
         updates: list[VehicleUpdate] = []
-        unresolved: set[str] = set()
         unmapped_stops: set[str] = set()
-        for slug, observations in owned.items():
-            dropped = len(snapshots[slug]) - len(observations)
-            if dropped:
-                log.debug(
-                    "buswhere: %s dropped %d device(s) running another route",
-                    slug,
-                    dropped,
-                )
-            for obs in observations:
-                now = (
-                    datetime.fromtimestamp(obs.timestamp, tz=UTC)
-                    if obs.timestamp
-                    else datetime.now(UTC)
-                )
-                update = self._build(slug, obs, now, unmapped_stops)
-                if update is None:
-                    unresolved.add(slug)
-                    continue
-                updates.append(update)
+        for key, (trip_id, start_date, route_id) in chosen.items():
+            slug, obs, slugs = devices[key]
+            # Prefer a slug on the assigned route for the label fallback.
+            slug = min((s for s in slugs if self._routes[s] == route_id), default=slug)
+            updates.append(self._build(slug, obs, trip_id, start_date, unmapped_stops))
+            self._last_sent[key] = obs.timestamp
 
-        updates = self._one_per_trip(updates)
-
-        if unresolved:
-            log.warning(
-                "buswhere: %d route(s) running but no scheduled trip matched (%s)",
-                len(unresolved),
-                ", ".join(sorted(unresolved)),
-            )
+        unassigned = len(fixes) - len(chosen)
+        if unassigned:
+            log.debug("buswhere: %d device(s) on no trip", unassigned)
         if unmapped_stops:
             log.warning(
                 "buswhere: %d stop id(s) with no GTFS mapping this cycle (%s)",

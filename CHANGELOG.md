@@ -1,3 +1,10 @@
+## v0.6.0 (2026-11-25)
+
+### Feat
+
+- **buswhere**: assign buses to trips by position
+- **buswhere**: map stops for A AM, Philmont, Copake and Saturday shopping
+
 ## v0.5.0 (2026-11-22)
 
 ### Feat
